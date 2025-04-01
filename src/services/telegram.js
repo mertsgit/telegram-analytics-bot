@@ -9,6 +9,8 @@ let bot;
 let botInitialized = false;
 let botInfo = null;
 let initializationError = null;
+let launchRetryCount = 0;
+const MAX_LAUNCH_RETRIES = 5;
 
 try {
   if (!process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN.trim() === '') {
@@ -33,7 +35,8 @@ const getServiceStatus = () => {
     databaseConnected: isDBConnected(),
     openAIAvailable: isOpenAIServiceAvailable(),
     openAIError: getOpenAIErrorStatus(),
-    initializationError
+    initializationError,
+    launchRetryCount
   };
 };
 
@@ -45,9 +48,60 @@ const formatServiceStatusMessage = () => {
 - Bot: ${status.botInitialized ? '✅ Running' : '❌ Not running'}
 - Database: ${status.databaseConnected ? '✅ Connected' : '❌ Disconnected'}
 - OpenAI: ${status.openAIAvailable ? '✅ Available' : '❌ Unavailable'}
+${status.launchRetryCount > 0 ? `- Launch retries: ${status.launchRetryCount}/${MAX_LAUNCH_RETRIES}` : ''}
 ${status.openAIError ? `- OpenAI Error: ${status.openAIError}` : ''}
 ${status.initializationError ? `- Error: ${status.initializationError}` : ''}
   `;
+};
+
+// Helper function to launch the bot with retries
+const launchBotWithRetry = async (retryDelay = 5000) => {
+  try {
+    console.log(`Attempting to launch bot (attempt ${launchRetryCount + 1}/${MAX_LAUNCH_RETRIES})`);
+    
+    // Set polling parameters to handle conflicts better
+    // Using a unique polling identifier helps prevent conflicts
+    const uniqueId = `instance_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
+    
+    await bot.launch({
+      allowedUpdates: ['message', 'callback_query', 'inline_query', 'chat_member', 'new_chat_members'],
+      polling: {
+        timeout: 30,
+        limit: 100,
+        allowed_updates: ['message', 'callback_query', 'inline_query', 'chat_member', 'new_chat_members'],
+      }
+    });
+    
+    botInitialized = true;
+    launchRetryCount = 0; // Reset counter on success
+    console.log('Bot successfully launched');
+    return true;
+  } catch (error) {
+    console.error(`Failed to launch bot: ${error.message}`);
+    
+    // Handle 409 conflict error specifically
+    if (error.message.includes('409: Conflict') || error.message.includes('terminated by other getUpdates request')) {
+      console.log('Detected conflict with another bot instance. Waiting for other instance to time out...');
+      launchRetryCount++;
+      
+      if (launchRetryCount < MAX_LAUNCH_RETRIES) {
+        console.log(`Will retry in ${retryDelay/1000} seconds (attempt ${launchRetryCount + 1}/${MAX_LAUNCH_RETRIES})`);
+        
+        // Exponential backoff
+        const nextRetryDelay = retryDelay * 2;
+        
+        // Wait and retry
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        return await launchBotWithRetry(nextRetryDelay);
+      } else {
+        console.error(`Max retry attempts (${MAX_LAUNCH_RETRIES}) reached. Bot failed to start.`);
+        initializationError = `Max retry attempts reached. Conflict with another bot instance.`;
+        return false;
+      }
+    }
+    
+    return false;
+  }
 };
 
 // Initialize bot with commands and message handlers
@@ -305,13 +359,9 @@ ${topicsAggregation.map((t, i) => `${i+1}. ${t._id}: ${t.count} mentions`).join(
       }
     });
 
-    // Launch the bot
-    try {
-      await bot.launch();
-      botInitialized = true;
-      console.log('Bot successfully launched');
-    } catch (error) {
-      console.error(`Failed to launch bot: ${error.message}`);
+    // Launch the bot with retry mechanism
+    const botLaunched = await launchBotWithRetry();
+    if (!botLaunched) {
       return false;
     }
     
