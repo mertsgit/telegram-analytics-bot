@@ -12,16 +12,31 @@ const openai = new OpenAI({
  */
 const analyzeMessage = async (messageText) => {
   try {
+    // Skip analysis for very short messages
+    if (messageText.length < 3) {
+      return {
+        sentiment: 'neutral',
+        topics: ['short_message'],
+        entities: []
+      };
+    }
+
     const response = await openai.chat.completions.create({
       model: "gpt-3.5-turbo",
       messages: [
         {
           role: "system", 
-          content: "You are an assistant that analyzes message sentiment, topics, and key entities. Output JSON only."
+          content: "You are an assistant that analyzes message sentiment, topics, and key entities. Classify messages into clear categories. Output JSON only."
         },
         {
           role: "user", 
-          content: `Analyze the following message. Output JSON with sentiment (positive/negative/neutral), topics (array), and entities (array of people, places, organizations mentioned): "${messageText}"`
+          content: `Analyze the following message and output JSON with these fields:
+1. "sentiment": categorize as "positive", "negative", or "neutral"
+2. "topics": array of 1-3 main topics/categories the message belongs to (like "technology", "politics", "question", "greeting", etc.)
+3. "entities": array of people, places, organizations mentioned
+4. "intent": classify as one of ["question", "statement", "command", "greeting", "opinion", "other"]
+
+Message: "${messageText}"`
         }
       ],
       response_format: { type: "json_object" }
@@ -33,8 +48,9 @@ const analyzeMessage = async (messageText) => {
     console.error('Error analyzing message with OpenAI:', error);
     return {
       sentiment: 'unknown',
-      topics: [],
-      entities: []
+      topics: ['unclassified'],
+      entities: [],
+      intent: 'statement'
     };
   }
 };

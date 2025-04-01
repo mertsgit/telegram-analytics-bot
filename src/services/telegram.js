@@ -20,12 +20,18 @@ const initBot = async () => {
     await bot.telegram.setMyCommands([
       { command: 'start', description: 'Start the bot' },
       { command: 'help', description: 'Show help' },
-      { command: 'stats', description: 'Show chat statistics' }
+      { command: 'stats', description: 'Show chat statistics' },
+      { command: 'topics', description: 'Show top topics in this chat' }
     ]);
 
     // Handle start command
     bot.command('start', async (ctx) => {
-      await ctx.reply('Hello! I\'m tracking and analyzing messages in this group. Just add me to your group and I\'ll start working.');
+      if (ctx.chat.type === 'private') {
+        await ctx.reply('Hello! I track and analyze messages in groups. Add me to a group to start working!');
+      } else {
+        await ctx.reply(`Hello! I'm now tracking and analyzing messages in this group (${ctx.chat.title}).`);
+        console.log(`Bot initialized in group: ${ctx.chat.title} (${ctx.chat.id})`);
+      }
     });
 
     // Handle help command
@@ -34,44 +40,100 @@ const initBot = async () => {
         'Commands:\n' +
         '/start - Start the bot\n' +
         '/help - Show this help message\n' +
-        '/stats - Show statistics about messages in this chat'
+        '/stats - Show statistics about messages in this chat\n' +
+        '/topics - Show top topics discussed in this chat'
       );
     });
 
     // Handle stats command
     bot.command('stats', async (ctx) => {
       try {
+        // Only allow in group chats
+        if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+          return await ctx.reply('This command only works in group chats.');
+        }
+        
         const chatId = ctx.chat.id;
         
-        // Count total messages
-        const totalMessages = await Message.countDocuments({ chatId });
+        // Use the new static method to get chat stats
+        const stats = await Message.getChatStats(chatId);
         
-        // Get unique users
-        const uniqueUsers = await Message.distinct('userId', { chatId });
+        if (stats.totalMessages === 0) {
+          return await ctx.reply('No messages have been tracked in this chat yet.');
+        }
         
-        // Get message stats for sentiment
-        const sentimentStats = await Message.aggregate([
-          { $match: { chatId } },
-          { $group: {
-              _id: '$analysis.sentiment',
-              count: { $sum: 1 }
-            }
+        // Format user names
+        const formatUserName = (user) => {
+          if (user._id.username) {
+            return `@${user._id.username}`;
+          } else {
+            const firstName = user._id.firstName || '';
+            const lastName = user._id.lastName || '';
+            return `${firstName} ${lastName}`.trim() || `User ${user._id.userId}`;
           }
-        ]);
+        };
         
+        // Build the stats message for this specific chat
         const statsMessage = `
-📊 Chat Statistics:
-Total messages tracked: ${totalMessages}
-Unique users: ${uniqueUsers.length}
+📊 *Chat Statistics for "${ctx.chat.title}"*
 
-Sentiment breakdown:
-${sentimentStats.map(s => `- ${s._id || 'unknown'}: ${s.count}`).join('\n')}
+Total messages tracked: ${stats.totalMessages}
+Unique users: ${stats.uniqueUsers}
+
+${stats.sentiments.length > 0 ? `*Sentiment breakdown:*
+${stats.sentiments.map(s => `- ${s._id || 'unknown'}: ${s.count} (${Math.round(s.count/stats.totalMessages*100)}%)`).join('\n')}` : ''}
+
+${stats.topics.length > 0 ? `*Top 5 topics:*
+${stats.topics.slice(0, 5).map(t => `- ${t._id}: ${t.count} mentions`).join('\n')}` : ''}
+
+${stats.activeUsers.length > 0 ? `*Most active users:*
+${stats.activeUsers.slice(0, 5).map(u => `- ${formatUserName(u)}: ${u.messageCount} messages`).join('\n')}` : ''}
         `;
         
-        await ctx.reply(statsMessage);
+        await ctx.reply(statsMessage, { parse_mode: 'Markdown' });
       } catch (error) {
         console.error('Error generating stats:', error);
         await ctx.reply('Sorry, there was an error generating statistics.');
+      }
+    });
+    
+    // Handle topics command
+    bot.command('topics', async (ctx) => {
+      try {
+        // Only allow in group chats
+        if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+          return await ctx.reply('This command only works in group chats.');
+        }
+        
+        const chatId = ctx.chat.id;
+        
+        // Get top topics in this chat
+        const topicsAggregation = await Message.aggregate([
+          { $match: { chatId } },
+          { $unwind: { path: "$analysis.topics", preserveNullAndEmptyArrays: false } },
+          { $group: {
+              _id: "$analysis.topics",
+              count: { $sum: 1 }
+            }
+          },
+          { $sort: { count: -1 } },
+          { $limit: 15 }
+        ]);
+        
+        if (topicsAggregation.length === 0) {
+          return await ctx.reply('No topics have been identified in this chat yet.');
+        }
+        
+        const topicsMessage = `
+📋 *Top Topics in "${ctx.chat.title}"*
+
+${topicsAggregation.map((t, i) => `${i+1}. ${t._id}: ${t.count} mentions`).join('\n')}
+        `;
+        
+        await ctx.reply(topicsMessage, { parse_mode: 'Markdown' });
+      } catch (error) {
+        console.error('Error generating topics:', error);
+        await ctx.reply('Sorry, there was an error generating topics list.');
       }
     });
 
@@ -101,10 +163,26 @@ ${sentimentStats.map(s => `- ${s._id || 'unknown'}: ${s.count}`).join('\n')}
           
           // Save message to database
           await new Message(messageData).save();
-          console.log(`Saved message ${messageData.messageId} from chat ${messageData.chatId}`);
+          console.log(`Saved message ${messageData.messageId} from chat ${messageData.chatId} (${ctx.chat.title})`);
         }
       } catch (error) {
         console.error('Error processing message:', error);
+      }
+    });
+
+    // Handle when bot is added to a group
+    bot.on('new_chat_members', async (ctx) => {
+      try {
+        // Check if the bot itself was added
+        const newMembers = ctx.message.new_chat_members;
+        const botWasAdded = newMembers.some(member => member.id === botInfo.id);
+        
+        if (botWasAdded) {
+          await ctx.reply(`Hello! I've been added to "${ctx.chat.title}". I'll start tracking and analyzing messages in this group.`);
+          console.log(`Bot was added to a new group: ${ctx.chat.title} (${ctx.chat.id})`);
+        }
+      } catch (error) {
+        console.error('Error handling new chat members:', error);
       }
     });
 
