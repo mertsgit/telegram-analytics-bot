@@ -1,53 +1,137 @@
 const { Telegraf } = require('telegraf');
 const Message = require('../models/Message');
-const { analyzeMessage } = require('./openai');
+const { analyzeMessage, isOpenAIServiceAvailable, getOpenAIErrorStatus } = require('./openai');
+const { isDBConnected } = require('../config/database');
 require('dotenv').config();
 
-// Initialize bot
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-
-// Store bot info
+// Initialize bot with error handling
+let bot;
+let botInitialized = false;
 let botInfo = null;
+let initializationError = null;
+
+try {
+  if (!process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN.trim() === '') {
+    initializationError = 'Telegram Bot Token is missing or empty. Bot cannot start.';
+    console.error(initializationError);
+  } else if (process.env.TELEGRAM_BOT_TOKEN === 'your_telegram_bot_token') {
+    initializationError = 'You are using the default Telegram Bot Token. Please update it with your actual token.';
+    console.error(initializationError);
+  } else {
+    bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+    console.log('Telegram bot initialized');
+  }
+} catch (error) {
+  initializationError = `Error initializing Telegram bot: ${error.message}`;
+  console.error(initializationError);
+}
+
+// Check service status
+const getServiceStatus = () => {
+  return {
+    botInitialized,
+    databaseConnected: isDBConnected(),
+    openAIAvailable: isOpenAIServiceAvailable(),
+    openAIError: getOpenAIErrorStatus(),
+    initializationError
+  };
+};
+
+// Helper to format service status message
+const formatServiceStatusMessage = () => {
+  const status = getServiceStatus();
+  return `
+🤖 *Bot Status*
+- Bot: ${status.botInitialized ? '✅ Running' : '❌ Not running'}
+- Database: ${status.databaseConnected ? '✅ Connected' : '❌ Disconnected'}
+- OpenAI: ${status.openAIAvailable ? '✅ Available' : '❌ Unavailable'}
+${status.openAIError ? `- OpenAI Error: ${status.openAIError}` : ''}
+${status.initializationError ? `- Error: ${status.initializationError}` : ''}
+  `;
+};
 
 // Initialize bot with commands and message handlers
 const initBot = async () => {
   try {
+    // Check if bot is properly initialized
+    if (!bot) {
+      console.error('Cannot initialize bot: Bot instance is not available.');
+      return false;
+    }
+
     // Get bot info
-    botInfo = await bot.telegram.getMe();
-    console.log(`Bot started as @${botInfo.username}`);
+    try {
+      botInfo = await bot.telegram.getMe();
+      console.log(`Bot started as @${botInfo.username}`);
+    } catch (error) {
+      console.error(`Failed to get bot info: ${error.message}`);
+      return false;
+    }
     
     // Set bot commands
-    await bot.telegram.setMyCommands([
-      { command: 'start', description: 'Start the bot' },
-      { command: 'help', description: 'Show help' },
-      { command: 'stats', description: 'Show chat statistics' },
-      { command: 'topics', description: 'Show top topics in this chat' }
-    ]);
+    try {
+      await bot.telegram.setMyCommands([
+        { command: 'start', description: 'Start the bot' },
+        { command: 'help', description: 'Show help' },
+        { command: 'stats', description: 'Show chat statistics' },
+        { command: 'topics', description: 'Show top topics in this chat' },
+        { command: 'status', description: 'Check bot service status' }
+      ]);
+    } catch (error) {
+      console.error(`Failed to set bot commands: ${error.message}`);
+      // Continue despite this error
+    }
 
     // Handle start command
     bot.command('start', async (ctx) => {
-      if (ctx.chat.type === 'private') {
-        await ctx.reply('Hello! I track and analyze messages in groups. Add me to a group to start working!');
-      } else {
-        await ctx.reply(`Hello! I'm now tracking and analyzing messages in this group (${ctx.chat.title}).`);
-        console.log(`Bot initialized in group: ${ctx.chat.title} (${ctx.chat.id})`);
+      try {
+        if (ctx.chat.type === 'private') {
+          await ctx.reply('Hello! I track and analyze messages in groups. Add me to a group to start working!');
+        } else {
+          await ctx.reply(`Hello! I'm now tracking and analyzing messages in this group (${ctx.chat.title}).`);
+          console.log(`Bot initialized in group: ${ctx.chat.title} (${ctx.chat.id})`);
+        }
+      } catch (error) {
+        console.error(`Error handling start command: ${error.message}`);
+        await ctx.reply('Sorry, there was an error processing your command. Please try again later.');
       }
     });
 
     // Handle help command
     bot.command('help', async (ctx) => {
-      await ctx.reply(
-        'Commands:\n' +
-        '/start - Start the bot\n' +
-        '/help - Show this help message\n' +
-        '/stats - Show statistics about messages in this chat\n' +
-        '/topics - Show top topics discussed in this chat'
-      );
+      try {
+        await ctx.reply(
+          'Commands:\n' +
+          '/start - Start the bot\n' +
+          '/help - Show this help message\n' +
+          '/stats - Show statistics about messages in this chat\n' +
+          '/topics - Show top topics discussed in this chat\n' +
+          '/status - Check if all bot services are working properly'
+        );
+      } catch (error) {
+        console.error(`Error handling help command: ${error.message}`);
+        await ctx.reply('Sorry, there was an error displaying the help message. Please try again later.');
+      }
+    });
+
+    // Handle status command
+    bot.command('status', async (ctx) => {
+      try {
+        await ctx.reply(formatServiceStatusMessage(), { parse_mode: 'Markdown' });
+      } catch (error) {
+        console.error(`Error handling status command: ${error.message}`);
+        await ctx.reply('Sorry, there was an error checking the service status.');
+      }
     });
 
     // Handle stats command
     bot.command('stats', async (ctx) => {
       try {
+        // Check if database is connected
+        if (!isDBConnected()) {
+          return await ctx.reply('⚠️ Database connection is unavailable. Stats cannot be retrieved at this time.');
+        }
+
         // Only allow in group chats
         if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
           return await ctx.reply('This command only works in group chats.');
@@ -55,7 +139,7 @@ const initBot = async () => {
         
         const chatId = ctx.chat.id;
         
-        // Use the new static method to get chat stats
+        // Use the static method to get chat stats
         const stats = await Message.getChatStats(chatId);
         
         if (stats.totalMessages === 0) {
@@ -92,14 +176,19 @@ ${stats.activeUsers.slice(0, 5).map(u => `- ${formatUserName(u)}: ${u.messageCou
         
         await ctx.reply(statsMessage, { parse_mode: 'Markdown' });
       } catch (error) {
-        console.error('Error generating stats:', error);
-        await ctx.reply('Sorry, there was an error generating statistics.');
+        console.error(`Error generating stats: ${error.message}`);
+        await ctx.reply('Sorry, there was an error generating statistics. Please try again later or check the bot status with /status.');
       }
     });
     
     // Handle topics command
     bot.command('topics', async (ctx) => {
       try {
+        // Check if database is connected
+        if (!isDBConnected()) {
+          return await ctx.reply('⚠️ Database connection is unavailable. Topics cannot be retrieved at this time.');
+        }
+
         // Only allow in group chats
         if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
           return await ctx.reply('This command only works in group chats.');
@@ -132,15 +221,29 @@ ${topicsAggregation.map((t, i) => `${i+1}. ${t._id}: ${t.count} mentions`).join(
         
         await ctx.reply(topicsMessage, { parse_mode: 'Markdown' });
       } catch (error) {
-        console.error('Error generating topics:', error);
-        await ctx.reply('Sorry, there was an error generating topics list.');
+        console.error(`Error generating topics: ${error.message}`);
+        await ctx.reply('Sorry, there was an error generating the topics list. Please try again later or check the bot status with /status.');
       }
     });
 
     // Handle messages
     bot.on('message', async (ctx) => {
       try {
-        if (!ctx.message.text) return; // Skip non-text messages
+        // Skip if not in a group chat
+        if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+          return;
+        }
+        
+        // Skip if database is not connected
+        if (!isDBConnected()) {
+          console.log(`Skipping message processing: Database not connected (Chat: ${ctx.chat.title})`);
+          return;
+        }
+
+        // Skip non-text messages
+        if (!ctx.message.text) {
+          return;
+        }
         
         // Extract message data
         const messageData = {
@@ -155,18 +258,21 @@ ${topicsAggregation.map((t, i) => `${i+1}. ${t._id}: ${t.count} mentions`).join(
           date: new Date(ctx.message.date * 1000) // Convert Unix timestamp to Date
         };
         
-        // Only analyze and save if in a group chat
-        if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
-          // Analyze the message with OpenAI
-          const analysis = await analyzeMessage(messageData.text);
-          messageData.analysis = analysis;
-          
-          // Save message to database
-          await new Message(messageData).save();
-          console.log(`Saved message ${messageData.messageId} from chat ${messageData.chatId} (${ctx.chat.title})`);
+        // Skip private bot commands for cleaner DB
+        if (messageData.text.startsWith('/')) {
+          return;
         }
+        
+        // Analyze the message with OpenAI
+        const analysis = await analyzeMessage(messageData.text);
+        messageData.analysis = analysis;
+        
+        // Save message to database
+        await new Message(messageData).save();
+        console.log(`Saved message ${messageData.messageId} from chat ${messageData.chatId} (${ctx.chat.title})`);
       } catch (error) {
-        console.error('Error processing message:', error);
+        console.error(`Error processing message: ${error.message}`);
+        // Don't notify users for individual message processing errors
       }
     });
 
@@ -182,22 +288,48 @@ ${topicsAggregation.map((t, i) => `${i+1}. ${t._id}: ${t.count} mentions`).join(
           console.log(`Bot was added to a new group: ${ctx.chat.title} (${ctx.chat.id})`);
         }
       } catch (error) {
-        console.error('Error handling new chat members:', error);
+        console.error(`Error handling new chat members: ${error.message}`);
+      }
+    });
+
+    // Handle errors
+    bot.catch((err, ctx) => {
+      console.error(`Telegram bot error: ${err.message}`);
+      console.error('Error context:', ctx);
+      
+      // Try to notify user
+      try {
+        ctx.reply('Sorry, an error occurred. Our team has been notified.');
+      } catch (replyError) {
+        console.error(`Could not send error reply: ${replyError.message}`);
       }
     });
 
     // Launch the bot
-    bot.launch();
+    try {
+      await bot.launch();
+      botInitialized = true;
+      console.log('Bot successfully launched');
+    } catch (error) {
+      console.error(`Failed to launch bot: ${error.message}`);
+      return false;
+    }
     
     // Enable graceful stop
-    process.once('SIGINT', () => bot.stop('SIGINT'));
-    process.once('SIGTERM', () => bot.stop('SIGTERM'));
+    process.once('SIGINT', () => {
+      bot.stop('SIGINT');
+      console.log('Bot stopped due to SIGINT');
+    });
+    process.once('SIGTERM', () => {
+      bot.stop('SIGTERM');
+      console.log('Bot stopped due to SIGTERM');
+    });
     
     return true;
   } catch (error) {
-    console.error('Error initializing bot:', error);
+    console.error(`Error initializing bot: ${error.message}`);
     return false;
   }
 };
 
-module.exports = { initBot }; 
+module.exports = { initBot, getServiceStatus }; 

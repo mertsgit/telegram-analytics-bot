@@ -1,9 +1,54 @@
 const OpenAI = require('openai');
 require('dotenv').config();
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Track OpenAI service availability
+let isOpenAIAvailable = true;
+let lastOpenAIError = null;
+let consecutiveErrors = 0;
+
+// Initialize OpenAI with error handling
+let openai;
+try {
+  if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.trim() === '') {
+    console.error('OpenAI API Key is missing or empty. Message analysis will not be available.');
+    isOpenAIAvailable = false;
+  } else {
+    openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+    console.log('OpenAI service initialized successfully');
+  }
+} catch (error) {
+  console.error(`Error initializing OpenAI: ${error.message}`);
+  isOpenAIAvailable = false;
+  lastOpenAIError = error.message;
+}
+
+/**
+ * Check if OpenAI service is available
+ * @returns {boolean} Availability status
+ */
+const isOpenAIServiceAvailable = () => {
+  return isOpenAIAvailable && consecutiveErrors < 5;
+};
+
+/**
+ * Get last OpenAI error message
+ * @returns {string|null} Error message
+ */
+const getOpenAIErrorStatus = () => {
+  return lastOpenAIError;
+};
+
+/**
+ * Reset error counter after successful calls
+ */
+const resetErrorCounter = () => {
+  if (consecutiveErrors > 0) {
+    consecutiveErrors = 0;
+    console.log('OpenAI error counter reset after successful call');
+  }
+};
 
 /**
  * Analyze message content using OpenAI
@@ -11,16 +56,30 @@ const openai = new OpenAI({
  * @returns {Object} Analysis results
  */
 const analyzeMessage = async (messageText) => {
-  try {
-    // Skip analysis for very short messages
-    if (messageText.length < 3) {
-      return {
-        sentiment: 'neutral',
-        topics: ['short_message'],
-        entities: []
-      };
-    }
+  // If OpenAI is not available, return default analysis
+  if (!isOpenAIServiceAvailable()) {
+    console.log('Skipping OpenAI analysis: Service unavailable');
+    return {
+      sentiment: 'unknown',
+      topics: ['service_unavailable'],
+      entities: [],
+      intent: 'statement'
+    };
+  }
 
+  // Skip analysis for very short messages
+  if (!messageText || messageText.length < 3) {
+    return {
+      sentiment: 'neutral',
+      topics: ['short_message'],
+      entities: [],
+      intent: 'statement'
+    };
+  }
+
+  try {
+    console.log(`Analyzing message: "${messageText.substring(0, 30)}${messageText.length > 30 ? '...' : ''}"`);
+    
     const response = await openai.chat.completions.create({
       model: "gpt-3.5-turbo",
       messages: [
@@ -43,16 +102,42 @@ Message: "${messageText}"`
     });
 
     // Parse the JSON response
-    return JSON.parse(response.choices[0].message.content);
+    const result = JSON.parse(response.choices[0].message.content);
+    
+    // Reset error counter on success
+    resetErrorCounter();
+    
+    return result;
   } catch (error) {
-    console.error('Error analyzing message with OpenAI:', error);
+    consecutiveErrors++;
+    isOpenAIAvailable = consecutiveErrors < 5; // Consider service unavailable after 5 consecutive errors
+    lastOpenAIError = error.message;
+    
+    console.error(`Error analyzing message with OpenAI (${consecutiveErrors} consecutive errors): ${error.message}`);
+    
+    // More detailed error logging based on error type
+    if (error.name === 'AuthenticationError') {
+      console.error('OpenAI API key is invalid. Please check your API key.');
+    } else if (error.name === 'RateLimitError') {
+      console.error('OpenAI rate limit exceeded. Please try again later or upgrade your plan.');
+    } else if (error.name === 'ServiceUnavailableError') {
+      console.error('OpenAI service is temporarily unavailable. Please try again later.');
+    } else if (error.name === 'TimeoutError') {
+      console.error('OpenAI request timed out. Please check your network connection.');
+    }
+    
     return {
       sentiment: 'unknown',
-      topics: ['unclassified'],
+      topics: ['analysis_error'],
       entities: [],
-      intent: 'statement'
+      intent: 'statement',
+      error: error.message
     };
   }
 };
 
-module.exports = { analyzeMessage }; 
+module.exports = { 
+  analyzeMessage,
+  isOpenAIServiceAvailable,
+  getOpenAIErrorStatus
+}; 
