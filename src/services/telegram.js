@@ -181,22 +181,29 @@ const initBot = async () => {
     // Handle stats command
     bot.command('stats', async (ctx) => {
       try {
+        console.log(`Stats command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'})`);
+        
         // Check if database is connected
         if (!isDBConnected()) {
+          console.error('Stats command failed: Database not connected');
           return await ctx.reply('⚠️ Database connection is unavailable. Stats cannot be retrieved at this time.');
         }
 
         // Only allow in group chats
         if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+          console.log('Stats command rejected: Not a group chat');
           return await ctx.reply('This command only works in group chats.');
         }
         
         const chatId = ctx.chat.id;
+        console.log(`Fetching stats for chat ${chatId}`);
         
         // Use the static method to get chat stats
         const stats = await Message.getChatStats(chatId);
+        console.log(`Stats retrieved for chat ${chatId}:`, JSON.stringify(stats, null, 2));
         
         if (stats.totalMessages === 0) {
+          console.log(`No messages found for chat ${chatId}`);
           return await ctx.reply('No messages have been tracked in this chat yet.');
         }
         
@@ -219,18 +226,20 @@ Total messages tracked: ${stats.totalMessages}
 Unique users: ${stats.uniqueUsers}
 
 ${stats.sentiments.length > 0 ? `*Sentiment breakdown:*
-${stats.sentiments.map(s => `- ${s._id || 'unknown'}: ${s.count} (${Math.round(s.count/stats.totalMessages*100)}%)`).join('\n')}` : ''}
+${stats.sentiments.map(s => `- ${s._id || 'unknown'}: ${s.count} (${Math.round(s.count/stats.totalMessages*100)}%)`).join('\n')}` : 'No sentiment data available'}
 
 ${stats.topics.length > 0 ? `*Top 5 topics:*
-${stats.topics.slice(0, 5).map(t => `- ${t._id}: ${t.count} mentions`).join('\n')}` : ''}
+${stats.topics.slice(0, 5).map(t => `- ${t._id}: ${t.count} mentions`).join('\n')}` : 'No topic data available'}
 
 ${stats.activeUsers.length > 0 ? `*Most active users:*
-${stats.activeUsers.slice(0, 5).map(u => `- ${formatUserName(u)}: ${u.messageCount} messages`).join('\n')}` : ''}
+${stats.activeUsers.slice(0, 5).map(u => `- ${formatUserName(u)}: ${u.messageCount} messages`).join('\n')}` : 'No user activity data available'}
         `;
         
+        console.log(`Sending stats message to chat ${chatId}`);
         await ctx.reply(statsMessage, { parse_mode: 'Markdown' });
       } catch (error) {
-        console.error(`Error generating stats: ${error.message}`);
+        console.error(`Error generating stats for chat ${ctx.chat.id}:`, error);
+        console.error('Error stack:', error.stack);
         await ctx.reply('Sorry, there was an error generating statistics. Please try again later or check the bot status with /status.');
       }
     });
@@ -238,17 +247,22 @@ ${stats.activeUsers.slice(0, 5).map(u => `- ${formatUserName(u)}: ${u.messageCou
     // Handle topics command
     bot.command('topics', async (ctx) => {
       try {
+        console.log(`Topics command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'})`);
+        
         // Check if database is connected
         if (!isDBConnected()) {
+          console.error('Topics command failed: Database not connected');
           return await ctx.reply('⚠️ Database connection is unavailable. Topics cannot be retrieved at this time.');
         }
 
         // Only allow in group chats
         if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+          console.log('Topics command rejected: Not a group chat');
           return await ctx.reply('This command only works in group chats.');
         }
         
         const chatId = ctx.chat.id;
+        console.log(`Fetching topics for chat ${chatId}`);
         
         // Get top topics in this chat
         const topicsAggregation = await Message.aggregate([
@@ -261,21 +275,28 @@ ${stats.activeUsers.slice(0, 5).map(u => `- ${formatUserName(u)}: ${u.messageCou
           },
           { $sort: { count: -1 } },
           { $limit: 15 }
-        ]);
+        ]).exec(); // Add .exec() to ensure proper promise handling
         
-        if (topicsAggregation.length === 0) {
-          return await ctx.reply('No topics have been identified in this chat yet.');
+        console.log(`Topics retrieved for chat ${chatId}:`, JSON.stringify(topicsAggregation, null, 2));
+        
+        if (!topicsAggregation || topicsAggregation.length === 0) {
+          console.log(`No topics found for chat ${chatId}`);
+          return await ctx.reply('No topics have been identified in this chat yet. Try sending some messages first!');
         }
         
         const topicsMessage = `
 📋 *Top Topics in "${ctx.chat.title}"*
 
 ${topicsAggregation.map((t, i) => `${i+1}. ${t._id}: ${t.count} mentions`).join('\n')}
+
+_Note: Topics are identified from messages sent after the bot was added to the group._
         `;
         
+        console.log(`Sending topics message to chat ${chatId}`);
         await ctx.reply(topicsMessage, { parse_mode: 'Markdown' });
       } catch (error) {
-        console.error(`Error generating topics: ${error.message}`);
+        console.error(`Error generating topics for chat ${ctx.chat.id}:`, error);
+        console.error('Error stack:', error.stack);
         await ctx.reply('Sorry, there was an error generating the topics list. Please try again later or check the bot status with /status.');
       }
     });
@@ -314,18 +335,29 @@ ${topicsAggregation.map((t, i) => `${i+1}. ${t._id}: ${t.count} mentions`).join(
         
         // Skip private bot commands for cleaner DB
         if (messageData.text.startsWith('/')) {
+          console.log(`Skipping command message in chat ${ctx.chat.id}: ${messageData.text.split(' ')[0]}`);
           return;
         }
+        
+        console.log(`Processing message in chat ${ctx.chat.id}: "${messageData.text.substring(0, 50)}${messageData.text.length > 50 ? '...' : ''}"`);
         
         // Analyze the message with OpenAI
         const analysis = await analyzeMessage(messageData.text);
         messageData.analysis = analysis;
         
+        // Log analysis results
+        console.log(`Message analysis for chat ${ctx.chat.id}:`, {
+          sentiment: analysis.sentiment,
+          topics: analysis.topics,
+          intent: analysis.intent
+        });
+        
         // Save message to database
-        await new Message(messageData).save();
-        console.log(`Saved message ${messageData.messageId} from chat ${messageData.chatId} (${ctx.chat.title})`);
+        const savedMessage = await new Message(messageData).save();
+        console.log(`Saved message ${savedMessage.messageId} from chat ${savedMessage.chatId} (${ctx.chat.title})`);
       } catch (error) {
-        console.error(`Error processing message: ${error.message}`);
+        console.error(`Error processing message in chat ${ctx.chat.id}:`, error);
+        console.error('Error stack:', error.stack);
         // Don't notify users for individual message processing errors
       }
     });
