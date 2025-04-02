@@ -227,15 +227,6 @@ const initBot = async () => {
           sentimentPercentages[key] = totalSentiment > 0 ? Math.round((value / totalSentiment) * 100) : 0;
         }
         
-        // Format sentiment visualization with numbers instead of emojis
-        const sentiments = ['positive', 'negative', 'neutral'];
-        const sentimentBars = sentiments.map((sentiment, index) => {
-          const percentage = sentimentPercentages[sentiment] || 0;
-          const barLength = Math.max(1, Math.round(percentage / 5)); // 1 bar per 5%
-          const bar = '█'.repeat(barLength);
-          return `${index + 1}. ${sentiment}: ${bar} ${percentage}%`;
-        }).join('\n');
-        
         // Determine overall sentiment tone
         let overallTone = "neutral";
         if (sentimentPercentages.positive > sentimentPercentages.negative && 
@@ -246,6 +237,20 @@ const initBot = async () => {
           overallTone = "negative";
         }
         
+        // Format sentiment numbers
+        const sentiments = ['positive', 'negative', 'neutral'];
+        const sentimentNumbers = sentiments.map((sentiment, index) => {
+          return `${index + 1}. ${sentiment}: ${sentimentData[sentiment] || 0}`;
+        }).join('\n');
+        
+        // Format sentiment visualization with numbers
+        const sentimentBars = sentiments.map((sentiment, index) => {
+          const percentage = sentimentPercentages[sentiment] || 0;
+          const barLength = Math.max(1, Math.round(percentage / 5)); // 1 bar per 5%
+          const bar = '█'.repeat(barLength);
+          return `${index + 1}. ${sentiment}: ${bar} ${percentage}%`;
+        }).join('\n');
+        
         // Check for crypto-related topics
         const cryptoTopics = stats.topics
           .filter(t => /bitcoin|btc|eth|ethereum|crypto|token|blockchain|solana|sol|nft|defi|trading|coin/i.test(t._id))
@@ -255,9 +260,11 @@ const initBot = async () => {
         const statsMessage = `
 📊 *Sentiment Analysis for "${ctx.chat.title}"*
 
-${sentimentBars}
+${sentimentNumbers}
 
 *Overall sentiment:* The group has a predominantly ${overallTone} tone (${sentimentPercentages[overallTone]}%)
+
+${sentimentBars}
 
 *Chat Activity:*
 - Total messages: ${stats.totalMessages}
