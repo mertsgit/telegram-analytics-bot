@@ -488,16 +488,22 @@ _Data from CoinGecko_
             return await ctx.reply('No messages have been tracked in this chat yet. Send some messages first!');
           }
           
-          // Format user names
+          // Helper function to escape special Markdown characters
+          const escapeMarkdown = (text) => {
+            if (!text) return '';
+            return text.toString().replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
+          };
+          
+          // Format user names with safer access and escape Markdown
           const formatUserName = (user) => {
             try {
               if (user && user._id) {
                 if (user._id.username) {
-                  return `@${user._id.username}`;
+                  return escapeMarkdown(`@${user._id.username}`);
                 } else {
                   const firstName = user._id.firstName || '';
                   const lastName = user._id.lastName || '';
-                  return `${firstName} ${lastName}`.trim() || `User ${user._id.userId || 'unknown'}`;
+                  return escapeMarkdown(`${firstName} ${lastName}`.trim() || `User ${user._id.userId || 'unknown'}`);
                 }
               }
               return 'Unknown User';
@@ -508,43 +514,49 @@ _Data from CoinGecko_
           };
           
           // Get the total number of points in the leaderboard for percentage calculation
-          const totalLeaderboardPoints = leaderboard.reduce((sum, user) => sum + user.totalPoints, 0);
+          const totalLeaderboardPoints = leaderboard.reduce((sum, user) => sum + user.totalPoints, 0) || 1; // Avoid division by zero
           
-          // Create leaderboard message with medals and quality metrics
+          // Create leaderboard entries one by one, safely
+          let leaderboardEntries = '';
+          for (let index = 0; index < leaderboard.length; index++) {
+            try {
+              const user = leaderboard[index];
+              let prefix = `${index + 1}\.`;
+              if (index === 0) prefix = '🥇';
+              if (index === 1) prefix = '🥈';
+              if (index === 2) prefix = '🥉';
+              
+              const pointsPercentage = Math.round((user.totalPoints / totalLeaderboardPoints) * 100);
+              const qualityBadge = user.averagePoints >= 10 ? '⭐️ ' : 
+                                  user.averagePoints >= 5 ? '✨ ' : '';
+              
+              // Create progress bar for visual representation of point percentage
+              const progressLength = Math.max(1, Math.round(pointsPercentage / 5)); // 1 bar per 5%
+              const progressBar = '█'.repeat(progressLength);
+              
+              const userName = formatUserName(user);
+              const userEntry = `${prefix} ${qualityBadge}${userName}: ${user.totalPoints} pts (${pointsPercentage}%)\n   ${progressBar} ${user.messageCount} msgs, ${user.averagePoints} avg, ${user.highestScore} highest`;
+              
+              leaderboardEntries += userEntry + '\n\n';
+            } catch (userError) {
+              console.error(`Error formatting leaderboard entry for index ${index}:`, userError);
+              leaderboardEntries += `${index + 1}. Error formatting user\n\n`;
+            }
+          }
+          
+          // Create leaderboard message with HTML formatting instead of Markdown
           const leaderboardMessage = `
-🏆 *Quality-Based Leaderboard for "${ctx.chat.title}"*
+🏆 <b>Quality-Based Leaderboard for "${escapeMarkdown(ctx.chat.title)}"</b>
 
-${leaderboard.map((user, index) => {
-  try {
-    let prefix = `${index + 1}.`;
-    if (index === 0) prefix = '🥇';
-    if (index === 1) prefix = '🥈';
-    if (index === 2) prefix = '🥉';
-    
-    const pointsPercentage = Math.round((user.totalPoints / totalLeaderboardPoints) * 100);
-    const qualityBadge = user.averagePoints >= 10 ? '⭐️ ' : 
-                          user.averagePoints >= 5 ? '✨ ' : '';
-    
-    // Create progress bar for visual representation of point percentage
-    const progressLength = Math.max(1, Math.round(pointsPercentage / 5)); // 1 bar per 5%
-    const progressBar = '█'.repeat(progressLength);
-    
-    return `${prefix} ${qualityBadge}${formatUserName(user)}: ${user.totalPoints} pts (${pointsPercentage}%)
-   ${progressBar} ${user.messageCount} msgs, ${user.averagePoints} avg, ${user.highestScore} highest`;
-  } catch (error) {
-    console.error(`Error formatting leaderboard entry for index ${index}:`, error);
-    return `${index + 1}. Error formatting user`;
-  }
-}).join('\n\n')}
-
-*How points are earned:*
+${leaderboardEntries}
+<b>How points are earned:</b>
 - Message quality and length
 - Positive sentiment and helpfulness
 - Relevant topic discussions
 - Asking thoughtful questions
 - Sharing valuable information
 
-_Tracking quality-based points since bot was added_`;
+<i>Tracking quality-based points since bot was added</i>`;
           
           // Delete the processing message
           if (processingMsg) {
@@ -556,9 +568,9 @@ _Tracking quality-based points since bot was added_`;
             }
           }
           
-          // Send the leaderboard message
+          // Send the leaderboard message using HTML parse mode instead of Markdown
           console.log(`Sending leaderboard message to chat ${chatId}`);
-          await ctx.reply(leaderboardMessage, { parse_mode: 'Markdown' });
+          await ctx.reply(leaderboardMessage, { parse_mode: 'HTML' });
         } catch (dbError) {
           console.error(`Database error in leaderboard command for chat ${ctx.chat.id}:`, dbError);
           if (processingMsg) {
@@ -568,6 +580,10 @@ _Tracking quality-based points since bot was added_`;
               console.error(`Error deleting processing message: ${deleteError.message}`);
             }
           }
+          
+          // Send a simplified error message without any formatting
+          await ctx.reply(`Sorry, there was an error generating the leaderboard. Please try again in a few minutes.`);
+          
           throw new Error(`Database error: ${dbError.message}`);
         }
       } catch (error) {
