@@ -513,9 +513,6 @@ _Data from CoinGecko_
             }
           };
           
-          // Get the total number of points in the leaderboard for percentage calculation
-          const totalLeaderboardPoints = leaderboard.reduce((sum, user) => sum + user.totalPoints, 0) || 1; // Avoid division by zero
-          
           // Create leaderboard entries one by one, safely
           let leaderboardEntries = '';
           for (let index = 0; index < leaderboard.length; index++) {
@@ -526,16 +523,11 @@ _Data from CoinGecko_
               if (index === 1) prefix = '🥈';
               if (index === 2) prefix = '🥉';
               
-              const pointsPercentage = Math.round((user.totalPoints / totalLeaderboardPoints) * 100);
               const qualityBadge = user.averagePoints >= 10 ? '⭐️ ' : 
                                   user.averagePoints >= 5 ? '✨ ' : '';
               
-              // Create progress bar for visual representation of point percentage
-              const progressLength = Math.max(1, Math.round(pointsPercentage / 5)); // 1 bar per 5%
-              const progressBar = '█'.repeat(progressLength);
-              
               const userName = formatUserName(user);
-              const userEntry = `${prefix} ${qualityBadge}${userName}: ${user.totalPoints} pts (${pointsPercentage}%)\n   ${progressBar} ${user.messageCount} msgs, ${user.averagePoints} avg, ${user.highestScore} highest`;
+              const userEntry = `${prefix} ${qualityBadge}${userName}: ${user.totalPoints} pts\n   ${user.messageCount} messages, ${user.averagePoints} avg score`;
               
               leaderboardEntries += userEntry + '\n\n';
             } catch (userError) {
