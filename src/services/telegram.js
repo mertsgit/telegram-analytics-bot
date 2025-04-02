@@ -465,14 +465,26 @@ _Data from CoinGecko_
         console.log(`Fetching quality-based leaderboard for chat ${chatId}`);
         
         // Send a processing message
-        const processingMsg = await ctx.reply('⏳ Processing quality scores and creating leaderboard...');
+        let processingMsg;
+        try {
+          processingMsg = await ctx.reply('⏳ Processing quality scores and creating leaderboard...');
+        } catch (msgError) {
+          console.error(`Error sending processing message: ${msgError.message}`);
+          processingMsg = null;
+        }
         
         try {
           // Get leaderboard data using the new quality-based method
           const leaderboard = await Message.getChatLeaderboard(chatId, 10);
           
           if (!leaderboard || leaderboard.length === 0) {
-            await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+            if (processingMsg) {
+              try {
+                await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+              } catch (deleteError) {
+                console.error(`Error deleting processing message: ${deleteError.message}`);
+              }
+            }
             return await ctx.reply('No messages have been tracked in this chat yet. Send some messages first!');
           }
           
@@ -535,14 +547,27 @@ ${leaderboard.map((user, index) => {
 _Tracking quality-based points since bot was added_`;
           
           // Delete the processing message
-          await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+          if (processingMsg) {
+            try {
+              await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+            } catch (deleteError) {
+              console.error(`Error deleting processing message: ${deleteError.message}`);
+              // Continue despite deletion error
+            }
+          }
           
           // Send the leaderboard message
           console.log(`Sending leaderboard message to chat ${chatId}`);
           await ctx.reply(leaderboardMessage, { parse_mode: 'Markdown' });
         } catch (dbError) {
           console.error(`Database error in leaderboard command for chat ${ctx.chat.id}:`, dbError);
-          await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+          if (processingMsg) {
+            try {
+              await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+            } catch (deleteError) {
+              console.error(`Error deleting processing message: ${deleteError.message}`);
+            }
+          }
           throw new Error(`Database error: ${dbError.message}`);
         }
       } catch (error) {

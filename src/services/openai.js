@@ -57,7 +57,7 @@ const resetErrorCounter = () => {
  */
 const analyzeMessage = async (text) => {
   try {
-    if (!isOpenAIAvailable() || !text || text.trim() === '') {
+    if (!isOpenAIServiceAvailable() || !text || text.trim() === '') {
       return { sentiment: 'neutral', topics: [], intent: 'unknown' };
     }
 

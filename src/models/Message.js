@@ -59,7 +59,7 @@ const messageSchema = new mongoose.Schema({
     },
     intent: {
       type: String,
-      enum: ['question', 'statement', 'command', 'greeting', 'opinion', 'other'],
+      enum: ['question', 'statement', 'command', 'greeting', 'opinion', 'other', 'unknown'],
       default: 'statement'
     },
     cryptoSentiment: {
