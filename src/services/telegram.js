@@ -132,7 +132,8 @@ const initBot = async () => {
         { command: 'topics', description: 'Show categorized topics' },
         { command: 'leaderboard', description: 'Show top 10 most active users' },
         { command: 'health', description: 'Check bot service health' },
-        { command: 'price', description: 'Check price of a crypto coin' }
+        { command: 'price', description: 'Check price of a crypto coin' },
+        { command: 'bundle', description: 'Analyze Solana token bundles' }
       ]);
     } catch (error) {
       console.error(`Failed to set bot commands: ${error.message}`);
@@ -165,7 +166,8 @@ const initBot = async () => {
           '/topics - Show categorized topics in this chat\n' +
           '/leaderboard - Show top 10 most active users\n' +
           '/health - Check bot service health\n' +
-          '/price <coin> - Check current price of a cryptocurrency'
+          '/price <coin> - Check current price of a cryptocurrency\n' +
+          '/bundle <token_address> - Analyze Solana token bundles'
         );
       } catch (error) {
         console.error(`Error handling help command: ${error.message}`);
@@ -527,9 +529,86 @@ _Data from CoinGecko_
       }
     });
 
+    // Add bundle command to analyze Solana tokens
+    bot.command('bundle', async (ctx) => {
+      try {
+        const args = ctx.message.text.split(' ');
+        let tokenAddress = '';
+        
+        if (args.length > 1) {
+          tokenAddress = args[1].trim();
+        } else {
+          return await ctx.reply('Please specify a Solana token address. Example: /bundle 8s9FCz99Wcr3dHpikoqHDkuFjJJKBaKvEMjYPVvFLZP5');
+        }
+        
+        console.log(`Bundle command received for ${tokenAddress} in chat ${ctx.chat.id}`);
+        
+        // Send initial message to show processing
+        const processingMessage = await ctx.reply('🔍 Analyzing token bundles... Please wait.');
+        
+        try {
+          // Mock data for demonstration (in a real implementation, this would be API calls)
+          const tokenData = await simulateBundleAnalysis(tokenAddress);
+          
+          // Create formatted message
+          const bundleMessage = formatBundleAnalysis(tokenData);
+          
+          // Edit the processing message with the results
+          await bot.telegram.editMessageText(
+            ctx.chat.id, 
+            processingMessage.message_id, 
+            undefined, 
+            bundleMessage, 
+            { parse_mode: 'Markdown' }
+          );
+        } catch (apiError) {
+          console.error(`Error analyzing token bundles: ${apiError.message}`);
+          await bot.telegram.editMessageText(
+            ctx.chat.id, 
+            processingMessage.message_id, 
+            undefined, 
+            'Sorry, there was an error analyzing this token. Please check the address and try again later.'
+          );
+        }
+      } catch (error) {
+        console.error(`Error handling bundle command: ${error.message}`);
+        await ctx.reply('Sorry, there was an error processing your request. Please try again later.');
+      }
+    });
+
     // Handle messages
     bot.on('message', async (ctx) => {
       try {
+        // Process TrenchScannerBot commands
+        if (ctx.message.text && ctx.message.text.startsWith('/bundle')) {
+          // Pass the command to our bundle handler
+          const commandParts = ctx.message.text.split(' ');
+          if (commandParts.length > 1) {
+            const tokenAddress = commandParts[1].trim();
+            console.log(`Intercepted bundle command for ${tokenAddress}`);
+            
+            // Create a fake context that mimics a direct command to our bot
+            const fakeCtx = {
+              message: {
+                text: `/bundle ${tokenAddress}`,
+                message_id: ctx.message.message_id,
+                from: ctx.message.from,
+                chat: ctx.chat
+              },
+              reply: ctx.reply.bind(ctx),
+              chat: ctx.chat
+            };
+            
+            // Forward to our bundle handler
+            await bot.handleUpdate({
+              message: fakeCtx.message,
+              update_id: Date.now()
+            });
+            
+            return; // Skip normal message processing
+          }
+        }
+        
         // Skip if not in a group chat
         if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
           return;
@@ -641,6 +720,140 @@ _Data from CoinGecko_
     console.error(`Error initializing bot: ${error.message}`);
     return false;
   }
+};
+
+// Simulate bundle analysis (this would be replaced with actual API calls)
+const simulateBundleAnalysis = async (tokenAddress) => {
+  // In a real implementation, this would call APIs to get real data
+  // This is a simplified mock for demonstration purposes
+  
+  // Simulate API call time
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  
+  // Get token symbol from token address
+  // In production, this would be a real API call
+  const tokenSymbol = tokenAddress.substring(0, 4).toUpperCase() + 'A';
+  
+  // Random values for demonstration
+  const totalBundles = Math.floor(Math.random() * 80) + 20;
+  const holdingBundles = Math.floor(totalBundles * (Math.random() * 0.5 + 0.1));
+  const totalSolSpent = parseFloat((Math.random() * 300 + 100).toFixed(2));
+  const heldPercentage = parseFloat((Math.random() * 10).toFixed(4));
+  const isBonded = Math.random() > 0.5;
+  
+  // Generate creator risk profile
+  const totalCreated = Math.floor(Math.random() * 100);
+  const creatorHolding = parseFloat((Math.random() * 5).toFixed(2));
+  const hasRugHistory = Math.random() > 0.5;
+  const rugHistory = hasRugHistory ? 
+    ['TKOM', 'TRUMPETF', 'PUMPDOTFUN'].slice(0, Math.floor(Math.random() * 3) + 1) : 
+    [];
+  
+  // Generate warnings
+  const possibleWarnings = [
+    'Suspicious token spam',
+    'Creator wallet has rug history',
+    'High concentration of tokens in few wallets',
+    'Multiple tokens created from same wallet',
+    'Recent sell-off pattern detected'
+  ];
+  const warnings = [];
+  const warningCount = Math.floor(Math.random() * 3);
+  for (let i = 0; i < warningCount; i++) {
+    const warningIndex = Math.floor(Math.random() * possibleWarnings.length);
+    warnings.push(possibleWarnings[warningIndex]);
+    possibleWarnings.splice(warningIndex, 1);
+  }
+  
+  // Generate top 5 bundles
+  const bundles = [];
+  for (let i = 0; i < 5; i++) {
+    const slot = 328941800 + Math.floor(Math.random() * 200);
+    const uniqueWallets = Math.floor(Math.random() * 8) + 1;
+    const category = Math.random() > 0.7 ? '🎯 Snipers' : '✅ Regular Buyers';
+    const tokensBought = parseFloat((Math.random() * 50).toFixed(2));
+    const supplyPercentage = parseFloat((tokensBought / 10).toFixed(4));
+    const solSpent = parseFloat((Math.random() * 10).toFixed(2));
+    const holdingAmount = parseFloat((Math.random() * tokensBought).toFixed(2));
+    const holdingPercentage = parseFloat((holdingAmount / 10).toFixed(4));
+    
+    bundles.push({
+      slot,
+      uniqueWallets,
+      category,
+      tokensBought,
+      supplyPercentage,
+      solSpent,
+      holdingAmount,
+      holdingPercentage
+    });
+  }
+  
+  // Sort bundles by tokens bought (descending)
+  bundles.sort((a, b) => b.tokensBought - a.tokensBought);
+  
+  return {
+    symbol: tokenSymbol,
+    totalBundles,
+    holdingBundles,
+    totalSolSpent,
+    heldPercentage,
+    isBonded,
+    creator: {
+      totalCreated,
+      holding: creatorHolding,
+      rugHistory
+    },
+    warnings,
+    bundles
+  };
+};
+
+// Format bundle analysis data into a markdown message
+const formatBundleAnalysis = (data) => {
+  // Overall statistics section
+  let message = `🔍 *Advanced Bundle Analysis for $${data.symbol}*\n\n`;
+  
+  message += `*Overall Statistics*\n`;
+  message += `📦 Total Bundles: ${data.holdingBundles} (Holding) / ${data.totalBundles} (Total)\n`;
+  message += `💰 Total SOL Spent: ${data.totalSolSpent} SOL\n`;
+  message += `📈 Current Held Percentage: ${data.heldPercentage}%\n`;
+  message += `🔗 Bonded: ${data.isBonded ? 'Yes' : 'No'}\n\n`;
+  
+  // Creator risk profile
+  message += `👨‍💻 *Creator Risk Profile*\n`;
+  message += `• Total Created: ${data.creator.totalCreated}\n`;
+  message += `• Current Token Held %: ${data.creator.holding}%\n`;
+  
+  if (data.creator.rugHistory.length > 0) {
+    message += `• ⚠️ RUG HISTORY: ${data.creator.rugHistory.join(' | ')}\n`;
+  }
+  message += '\n';
+  
+  // Warnings
+  if (data.warnings.length > 0) {
+    message += `⚠️ *Dev Warnings:* \n`;
+    data.warnings.forEach(warning => {
+      message += `• ${warning}\n`;
+    });
+    message += '\n';
+  }
+  
+  // Top 5 bundles
+  message += `*Top 5 Bundles:*\n`;
+  data.bundles.forEach(bundle => {
+    const categoryEmoji = bundle.category.startsWith('🎯') ? '🎯' : '✅';
+    message += `${categoryEmoji} Slot ${bundle.slot}:\n`;
+    message += `  💼 Unique Wallets: ${bundle.uniqueWallets}\n`;
+    message += `  📁 Primary Category: ${bundle.category}\n`;
+    message += `  🪙 Tokens Bought: ${bundle.tokensBought.toFixed(2)} million\n`;
+    message += `  📊 % of Supply: ${bundle.supplyPercentage}%\n`;
+    message += `  💰 SOL Spent: ${bundle.solSpent} SOL\n`;
+    message += `  🔒 Holding Amount: ${bundle.holdingAmount.toFixed(2)} million\n`;
+    message += `  📈 Holding Percentage: ${bundle.holdingPercentage}%\n`;
+  });
+  
+  return message;
 };
 
 module.exports = { initBot, getServiceStatus }; 
