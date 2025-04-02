@@ -2,6 +2,7 @@ const { Telegraf } = require('telegraf');
 const Message = require('../models/Message');
 const { analyzeMessage, isOpenAIServiceAvailable, getOpenAIErrorStatus } = require('./openai');
 const { isDBConnected } = require('../config/database');
+const axios = require('axios');
 require('dotenv').config();
 
 // Initialize bot with error handling
@@ -130,7 +131,10 @@ const initBot = async () => {
         { command: 'stats', description: 'Show sentiment analysis' },
         { command: 'topics', description: 'Show categorized topics' },
         { command: 'leaderboard', description: 'Show most active users' },
-        { command: 'health', description: 'Check bot service health' }
+        { command: 'health', description: 'Check bot service health' },
+        { command: 'crypto', description: 'Show crypto trends in this group' },
+        { command: 'price', description: 'Check price of a crypto coin' },
+        { command: 'scamcheck', description: 'Check if mentioned coins have scam indicators' }
       ]);
     } catch (error) {
       console.error(`Failed to set bot commands: ${error.message}`);
@@ -162,7 +166,10 @@ const initBot = async () => {
           '/stats - Show sentiment analysis and basic stats\n' +
           '/topics - Show categorized topics in this chat\n' +
           '/leaderboard - Show top 10 most active users\n' +
-          '/health - Check if all bot services are working properly'
+          '/health - Check bot service health\n' +
+          '/crypto - Show crypto trends and mentions in this group\n' +
+          '/price <coin> - Check current price of a cryptocurrency\n' +
+          '/scamcheck - Check for potential scam coins mentioned in the group'
         );
       } catch (error) {
         console.error(`Error handling help command: ${error.message}`);
@@ -457,6 +464,197 @@ _Use /stats for group sentiment analysis_`;
       }
     });
 
+    // Add crypto command to show crypto-related statistics
+    bot.command('crypto', async (ctx) => {
+      try {
+        console.log(`Crypto command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'})`);
+        
+        // Check if database is connected
+        if (!isDBConnected()) {
+          console.error('Crypto command failed: Database not connected');
+          return await ctx.reply('⚠️ Database connection is unavailable. Crypto stats cannot be retrieved at this time.');
+        }
+
+        // Only allow in group chats
+        if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+          console.log('Crypto command rejected: Not a group chat');
+          return await ctx.reply('This command only works in group chats.');
+        }
+        
+        const chatId = ctx.chat.id;
+        console.log(`Fetching crypto stats for chat ${chatId}`);
+        
+        // Get crypto stats using the new static method
+        const cryptoStats = await Message.getCryptoStats(chatId);
+        
+        if (!cryptoStats || !cryptoStats.mentionedCoins || cryptoStats.mentionedCoins.length === 0) {
+          return await ctx.reply('No cryptocurrency mentions found in this chat yet. Talk about some coins first!');
+        }
+        
+        // Format crypto sentiment
+        const sentimentData = {
+          bullish: cryptoStats.cryptoSentiment.bullish || 0,
+          bearish: cryptoStats.cryptoSentiment.bearish || 0,
+          neutral: cryptoStats.cryptoSentiment.neutral || 0
+        };
+        
+        const totalSentiment = Object.values(sentimentData).reduce((a, b) => a + b, 0);
+        
+        // Create message with crypto stats
+        let cryptoMessage = `
+💰 *Crypto Analysis for "${ctx.chat.title}"*
+
+*Overall Group Sentiment:*
+${totalSentiment > 0 ? `- Bullish: ${Math.round((sentimentData.bullish / totalSentiment) * 100)}%
+- Bearish: ${Math.round((sentimentData.bearish / totalSentiment) * 100)}%
+- Neutral: ${Math.round((sentimentData.neutral / totalSentiment) * 100)}%` : 'No sentiment data available'}
+
+*Most Mentioned Coins:*
+${cryptoStats.mentionedCoins.slice(0, 7).map((coin, i) => {
+  const bullishPercentage = coin.count > 0 && coin.bullishCount ? Math.round((coin.bullishCount / coin.count) * 100) : 0;
+  const bearishPercentage = coin.count > 0 && coin.bearishCount ? Math.round((coin.bearishCount / coin.count) * 100) : 0;
+  const sentiment = bullishPercentage > bearishPercentage ? '📈' : 
+                    bearishPercentage > bullishPercentage ? '📉' : '➖';
+  
+  return `${i+1}. ${coin._id.toUpperCase()} - ${coin.count} mentions ${sentiment}`;
+}).join('\n')}
+
+${cryptoStats.potentialScams.length > 0 ? 
+`*⚠️ Potential Scam Warning:*
+Some tokens mentioned in this group have scam indicators. Check with /scamcheck` : ''}
+
+_Use /price <symbol> to check current prices_
+_Use /scamcheck to see tokens with scam indicators_
+`;
+        
+        await ctx.reply(cryptoMessage, { parse_mode: 'Markdown' });
+      } catch (error) {
+        console.error(`Error in crypto command for chat ${ctx.chat.id}:`, error);
+        console.error('Error stack:', error.stack);
+        await ctx.reply('Sorry, there was an error generating crypto statistics. Please try again in a few minutes.');
+      }
+    });
+
+    // Add price command to check cryptocurrency prices
+    bot.command('price', async (ctx) => {
+      try {
+        const args = ctx.message.text.split(' ');
+        let symbol = '';
+        
+        if (args.length > 1) {
+          symbol = args[1].toLowerCase().trim();
+        } else {
+          return await ctx.reply('Please specify a cryptocurrency symbol. Example: /price btc');
+        }
+        
+        console.log(`Price command received for ${symbol} in chat ${ctx.chat.id}`);
+        
+        // Fetch price data from CoinGecko API
+        try {
+          const response = await axios.get(`https://api.coingecko.com/api/v3/simple/price?ids=${symbol},${symbol}-token&vs_currencies=usd&include_24hr_change=true&include_market_cap=true`);
+          
+          // Try to match the symbol to a response key
+          let coinData = null;
+          if (response.data[symbol]) {
+            coinData = response.data[symbol];
+          } else if (response.data[`${symbol}-token`]) {
+            coinData = response.data[`${symbol}-token`];
+          }
+          
+          if (!coinData || !coinData.usd) {
+            // If primary lookup fails, try searching by ID
+            const searchResponse = await axios.get(`https://api.coingecko.com/api/v3/search?query=${symbol}`);
+            
+            if (searchResponse.data.coins && searchResponse.data.coins.length > 0) {
+              const coinId = searchResponse.data.coins[0].id;
+              const detailedResponse = await axios.get(`https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true`);
+              coinData = detailedResponse.data[coinId];
+            }
+          }
+          
+          if (coinData && coinData.usd) {
+            const priceChangeEmoji = coinData.usd_24h_change > 0 ? '📈' : 
+                                    coinData.usd_24h_change < 0 ? '📉' : '➖';
+                                    
+            const marketCapFormatted = coinData.usd_market_cap ? 
+              `$${(coinData.usd_market_cap / 1000000).toFixed(2)}M` : 'Unknown';
+              
+            const message = `
+💲 *${symbol.toUpperCase()} Price Info*
+
+Current Price: $${coinData.usd.toLocaleString()}
+24h Change: ${coinData.usd_24h_change ? coinData.usd_24h_change.toFixed(2) + '%' : 'Unknown'} ${priceChangeEmoji}
+Market Cap: ${marketCapFormatted}
+
+_Data from CoinGecko_
+`;
+            await ctx.reply(message, { parse_mode: 'Markdown' });
+          } else {
+            await ctx.reply(`Could not find price data for ${symbol.toUpperCase()}. Please check the symbol and try again.`);
+          }
+        } catch (apiError) {
+          console.error(`Error fetching price data: ${apiError.message}`);
+          await ctx.reply('Sorry, there was an error fetching price data. CoinGecko API might be rate limited. Please try again later.');
+        }
+      } catch (error) {
+        console.error(`Error handling price command: ${error.message}`);
+        await ctx.reply('Sorry, there was an error processing your request. Please try again later.');
+      }
+    });
+
+    // Add scamcheck command to check for potential scam tokens
+    bot.command('scamcheck', async (ctx) => {
+      try {
+        console.log(`Scamcheck command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'})`);
+        
+        // Check if database is connected
+        if (!isDBConnected()) {
+          console.error('Scamcheck command failed: Database not connected');
+          return await ctx.reply('⚠️ Database connection is unavailable. Scam check cannot be performed at this time.');
+        }
+
+        // Only allow in group chats
+        if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+          console.log('Scamcheck command rejected: Not a group chat');
+          return await ctx.reply('This command only works in group chats.');
+        }
+        
+        const chatId = ctx.chat.id;
+        console.log(`Checking for scam indicators in chat ${chatId}`);
+        
+        // Get crypto stats using the static method
+        const cryptoStats = await Message.getCryptoStats(chatId);
+        
+        if (!cryptoStats || !cryptoStats.potentialScams || cryptoStats.potentialScams.length === 0) {
+          return await ctx.reply('No potential scam tokens detected in this chat. This doesn\'t guarantee safety - always DYOR!');
+        }
+        
+        // Format scam report
+        let scamMessage = `
+⚠️ *Potential Scam Token Alert for "${ctx.chat.title}"*
+
+The following tokens mentioned in this group have possible scam indicators:
+
+${cryptoStats.potentialScams.map((scam, i) => {
+  const scamScorePercentage = Math.round(scam.scamScore * 100);
+  
+  return `${i+1}. *${scam.coin.toUpperCase()}*
+   - Risk score: ${scamScorePercentage}%
+   - Warning flags: ${scam.commonIndicators.map(ind => ind.indicator).join(', ')}`;
+}).join('\n\n')}
+
+*Disclaimer:* This is based on AI analysis of group messages and is not financial advice. 
+Always do your own research (DYOR) before investing in any cryptocurrency.
+`;
+        
+        await ctx.reply(scamMessage, { parse_mode: 'Markdown' });
+      } catch (error) {
+        console.error(`Error in scamcheck command for chat ${ctx.chat.id}:`, error);
+        console.error('Error stack:', error.stack);
+        await ctx.reply('Sorry, there was an error checking for scam tokens. Please try again in a few minutes.');
+      }
+    });
+
     // Handle messages
     bot.on('message', async (ctx) => {
       try {
@@ -505,7 +703,10 @@ _Use /stats for group sentiment analysis_`;
         console.log(`Message analysis for chat ${ctx.chat.id}:`, {
           sentiment: analysis.sentiment,
           topics: analysis.topics,
-          intent: analysis.intent
+          intent: analysis.intent,
+          cryptoSentiment: analysis.cryptoSentiment,
+          mentionedCoins: analysis.mentionedCoins,
+          scamIndicators: analysis.scamIndicators
         });
         
         // Save message to database

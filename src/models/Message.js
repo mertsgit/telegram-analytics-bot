@@ -57,13 +57,30 @@ const messageSchema = new mongoose.Schema({
       type: String,
       enum: ['question', 'statement', 'command', 'greeting', 'opinion', 'other'],
       default: 'statement'
+    },
+    cryptoSentiment: {
+      type: String,
+      enum: ['bullish', 'bearish', 'neutral', 'unknown'],
+      default: 'neutral'
+    },
+    mentionedCoins: [{
+      type: String
+    }],
+    scamIndicators: [{
+      type: String
+    }],
+    priceTargets: {
+      type: Map,
+      of: String
     }
   }
 }, { 
   timestamps: true,
   indexes: [
     { chatId: 1, date: -1 },
-    { chatId: 1, 'analysis.sentiment': 1 }
+    { chatId: 1, 'analysis.sentiment': 1 },
+    { chatId: 1, 'analysis.cryptoSentiment': 1 },
+    { chatId: 1, 'analysis.mentionedCoins': 1 }
   ]
 });
 
@@ -202,6 +219,165 @@ messageSchema.statics.getChatTopics = async function(chatId) {
     return topics;
   } catch (error) {
     console.error(`Error getting topics for chat ${chatId}:`, error);
+    throw error;
+  }
+};
+
+messageSchema.statics.getCryptoStats = async function(chatId) {
+  try {
+    console.log(`Getting crypto stats for chat ${chatId}`);
+    
+    // First, check if we have any messages with crypto mentions
+    const messagesWithCrypto = await this.countDocuments({
+      chatId,
+      'analysis.mentionedCoins': { $exists: true, $ne: [] }
+    });
+    
+    console.log(`Found ${messagesWithCrypto} messages with crypto mentions for chat ${chatId}`);
+    
+    if (messagesWithCrypto === 0) {
+      return {
+        mentionedCoins: [],
+        cryptoSentiment: {},
+        potentialScams: []
+      };
+    }
+
+    // Get coin mentions
+    const coinMentions = await this.aggregate([
+      {
+        $match: {
+          chatId: chatId,
+          'analysis.mentionedCoins': { $exists: true, $ne: [] }
+        }
+      },
+      { $unwind: "$analysis.mentionedCoins" },
+      {
+        $group: {
+          _id: "$analysis.mentionedCoins",
+          count: { $sum: 1 },
+          firstMentioned: { $min: "$date" },
+          lastMentioned: { $max: "$date" },
+          messages: { $push: { text: "$text", date: "$date", sentiment: "$analysis.cryptoSentiment" } }
+        }
+      },
+      { $sort: { count: -1 } },
+      {
+        $project: {
+          _id: 1,
+          count: 1,
+          firstMentioned: 1,
+          lastMentioned: 1,
+          // Get the last 3 messages for context
+          recentMessages: { $slice: ["$messages", -3] },
+          // Calculate sentiment scores
+          bullishCount: {
+            $size: {
+              $filter: {
+                input: "$messages",
+                as: "message",
+                cond: { $eq: ["$$message.sentiment", "bullish"] }
+              }
+            }
+          },
+          bearishCount: {
+            $size: {
+              $filter: {
+                input: "$messages",
+                as: "message",
+                cond: { $eq: ["$$message.sentiment", "bearish"] }
+              }
+            }
+          }
+        }
+      }
+    ]).exec();
+
+    // Get crypto sentiment distribution
+    const sentimentDistribution = await this.aggregate([
+      {
+        $match: {
+          chatId: chatId,
+          'analysis.cryptoSentiment': { $exists: true, $ne: null }
+        }
+      },
+      {
+        $group: {
+          _id: "$analysis.cryptoSentiment",
+          count: { $sum: 1 }
+        }
+      }
+    ]).exec();
+
+    // Get potential scam coins based on scam indicators
+    const potentialScams = await this.aggregate([
+      {
+        $match: {
+          chatId: chatId,
+          'analysis.scamIndicators': { $exists: true, $ne: [] }
+        }
+      },
+      { $unwind: "$analysis.mentionedCoins" },
+      {
+        $group: {
+          _id: "$analysis.mentionedCoins",
+          scamIndicatorCount: { $sum: { $size: "$analysis.scamIndicators" } },
+          scamIndicators: { $addToSet: "$analysis.scamIndicators" },
+          messageCount: { $sum: 1 }
+        }
+      },
+      {
+        $match: {
+          scamIndicatorCount: { $gt: 0 }
+        }
+      },
+      { $sort: { scamIndicatorCount: -1 } }
+    ]).exec();
+
+    // Calculate total crypto-related messages
+    const totalCryptoMessages = await this.countDocuments({
+      chatId,
+      $or: [
+        { 'analysis.mentionedCoins': { $exists: true, $ne: [] } },
+        { 'analysis.cryptoSentiment': { $exists: true, $ne: null } }
+      ]
+    });
+
+    // Format the scam indicators array
+    const formattedScams = potentialScams.map(scam => {
+      // Flatten the nested arrays of scam indicators
+      const flattenedIndicators = scam.scamIndicators.flat();
+      
+      // Count occurrences of each indicator
+      const indicatorCounts = flattenedIndicators.reduce((acc, indicator) => {
+        if (typeof indicator === 'string') {
+          acc[indicator] = (acc[indicator] || 0) + 1;
+        }
+        return acc;
+      }, {});
+      
+      return {
+        coin: scam._id,
+        messageCount: scam.messageCount,
+        scamScore: scam.scamIndicatorCount / scam.messageCount, // Normalized score
+        commonIndicators: Object.entries(indicatorCounts)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+          .map(([indicator, count]) => ({ indicator, count }))
+      };
+    });
+
+    return {
+      totalMessages: totalCryptoMessages,
+      mentionedCoins: coinMentions || [],
+      cryptoSentiment: sentimentDistribution.reduce((acc, item) => {
+        acc[item._id] = item.count;
+        return acc;
+      }, {}),
+      potentialScams: formattedScams || []
+    };
+  } catch (error) {
+    console.error(`Error getting crypto stats for chat ${chatId}:`, error);
     throw error;
   }
 };
