@@ -130,6 +130,7 @@ const initBot = async () => {
         { command: 'help', description: 'Show help' },
         { command: 'stats', description: 'Show sentiment analysis' },
         { command: 'topics', description: 'Show categorized topics' },
+        { command: 'leaderboard', description: 'Show top users by quality score' },
         { command: 'health', description: 'Check bot service health' },
         { command: 'price', description: 'Check price of a crypto coin' }
       ]);
@@ -162,6 +163,7 @@ const initBot = async () => {
           '/help - Show this help message\n' +
           '/stats - Show sentiment analysis and basic stats\n' +
           '/topics - Show categorized topics in this chat\n' +
+          '/leaderboard - Show top users ranked by quality score\n' +
           '/health - Check bot service health\n' +
           '/price <coin> - Check current price of a cryptocurrency'
         );
@@ -442,6 +444,114 @@ _Data from CoinGecko_
       }
     });
 
+    // Add leaderboard command
+    bot.command('leaderboard', async (ctx) => {
+      try {
+        console.log(`Leaderboard command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'})`);
+        
+        // Check if database is connected
+        if (!isDBConnected()) {
+          console.error('Leaderboard command failed: Database not connected');
+          return await ctx.reply('⚠️ Database connection is unavailable. Leaderboard cannot be retrieved at this time.');
+        }
+
+        // Only allow in group chats
+        if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+          console.log('Leaderboard command rejected: Not a group chat');
+          return await ctx.reply('This command only works in group chats.');
+        }
+        
+        const chatId = ctx.chat.id;
+        console.log(`Fetching quality-based leaderboard for chat ${chatId}`);
+        
+        // Send a processing message
+        const processingMsg = await ctx.reply('⏳ Processing quality scores and creating leaderboard...');
+        
+        try {
+          // Get leaderboard data using the new quality-based method
+          const leaderboard = await Message.getChatLeaderboard(chatId, 10);
+          
+          if (!leaderboard || leaderboard.length === 0) {
+            await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+            return await ctx.reply('No messages have been tracked in this chat yet. Send some messages first!');
+          }
+          
+          // Format user names
+          const formatUserName = (user) => {
+            try {
+              if (user && user._id) {
+                if (user._id.username) {
+                  return `@${user._id.username}`;
+                } else {
+                  const firstName = user._id.firstName || '';
+                  const lastName = user._id.lastName || '';
+                  return `${firstName} ${lastName}`.trim() || `User ${user._id.userId || 'unknown'}`;
+                }
+              }
+              return 'Unknown User';
+            } catch (error) {
+              console.error('Error formatting user name:', error);
+              return 'Unknown User';
+            }
+          };
+          
+          // Get the total number of points in the leaderboard for percentage calculation
+          const totalLeaderboardPoints = leaderboard.reduce((sum, user) => sum + user.totalPoints, 0);
+          
+          // Create leaderboard message with medals and quality metrics
+          const leaderboardMessage = `
+🏆 *Quality-Based Leaderboard for "${ctx.chat.title}"*
+
+${leaderboard.map((user, index) => {
+  try {
+    let prefix = `${index + 1}.`;
+    if (index === 0) prefix = '🥇';
+    if (index === 1) prefix = '🥈';
+    if (index === 2) prefix = '🥉';
+    
+    const pointsPercentage = Math.round((user.totalPoints / totalLeaderboardPoints) * 100);
+    const qualityBadge = user.averagePoints >= 10 ? '⭐️ ' : 
+                          user.averagePoints >= 5 ? '✨ ' : '';
+    
+    // Create progress bar for visual representation of point percentage
+    const progressLength = Math.max(1, Math.round(pointsPercentage / 5)); // 1 bar per 5%
+    const progressBar = '█'.repeat(progressLength);
+    
+    return `${prefix} ${qualityBadge}${formatUserName(user)}: ${user.totalPoints} pts (${pointsPercentage}%)
+   ${progressBar} ${user.messageCount} msgs, ${user.averagePoints} avg, ${user.highestScore} highest`;
+  } catch (error) {
+    console.error(`Error formatting leaderboard entry for index ${index}:`, error);
+    return `${index + 1}. Error formatting user`;
+  }
+}).join('\n\n')}
+
+*How points are earned:*
+- Message quality and length
+- Positive sentiment and helpfulness
+- Relevant topic discussions
+- Asking thoughtful questions
+- Sharing valuable information
+
+_Tracking quality-based points since bot was added_`;
+          
+          // Delete the processing message
+          await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+          
+          // Send the leaderboard message
+          console.log(`Sending leaderboard message to chat ${chatId}`);
+          await ctx.reply(leaderboardMessage, { parse_mode: 'Markdown' });
+        } catch (dbError) {
+          console.error(`Database error in leaderboard command for chat ${ctx.chat.id}:`, dbError);
+          await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+          throw new Error(`Database error: ${dbError.message}`);
+        }
+      } catch (error) {
+        console.error(`Error in leaderboard command for chat ${ctx.chat.id}:`, error);
+        console.error('Error stack:', error.stack);
+        await ctx.reply('Sorry, there was an error generating the leaderboard. Please try again in a few minutes.');
+      }
+    });
+
     // Handle messages
     bot.on('message', async (ctx) => {
       try {
@@ -486,19 +596,24 @@ _Data from CoinGecko_
         const analysis = await analyzeMessage(messageData.text);
         messageData.analysis = analysis;
         
-        // Log analysis results
+        // Calculate message quality score
+        const qualityScore = Message.calculateQualityScore(messageData.text, analysis);
+        messageData.qualityScore = qualityScore;
+        
+        // Log analysis results and quality score
         console.log(`Message analysis for chat ${ctx.chat.id}:`, {
           sentiment: analysis.sentiment,
           topics: analysis.topics,
           intent: analysis.intent,
           cryptoSentiment: analysis.cryptoSentiment,
           mentionedCoins: analysis.mentionedCoins,
-          scamIndicators: analysis.scamIndicators
+          scamIndicators: analysis.scamIndicators,
+          qualityScore: qualityScore
         });
         
         // Save message to database
         const savedMessage = await new Message(messageData).save();
-        console.log(`Saved message ${savedMessage.messageId} from chat ${savedMessage.chatId} (${ctx.chat.title})`);
+        console.log(`Saved message ${savedMessage.messageId} from chat ${savedMessage.chatId} (${ctx.chat.title}) with quality score: ${qualityScore}`);
       } catch (error) {
         console.error(`Error processing message in chat ${ctx.chat.id}:`, error);
         console.error('Error stack:', error.stack);

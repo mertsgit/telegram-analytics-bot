@@ -39,6 +39,10 @@ const messageSchema = new mongoose.Schema({
     default: Date.now,
     index: true
   },
+  qualityScore: {
+    type: Number,
+    default: 0
+  },
   analysis: {
     sentiment: {
       type: String,
@@ -80,7 +84,8 @@ const messageSchema = new mongoose.Schema({
     { chatId: 1, date: -1 },
     { chatId: 1, 'analysis.sentiment': 1 },
     { chatId: 1, 'analysis.cryptoSentiment': 1 },
-    { chatId: 1, 'analysis.mentionedCoins': 1 }
+    { chatId: 1, 'analysis.mentionedCoins': 1 },
+    { chatId: 1, userId: 1, qualityScore: -1 } // Index for leaderboard queries
   ]
 });
 
@@ -378,6 +383,130 @@ messageSchema.statics.getCryptoStats = async function(chatId) {
     };
   } catch (error) {
     console.error(`Error getting crypto stats for chat ${chatId}:`, error);
+    throw error;
+  }
+};
+
+// Calculate message quality score
+messageSchema.statics.calculateQualityScore = function(message, analysis) {
+  let score = 0;
+  
+  // Base points for sending a message
+  score += 1;
+  
+  // Points based on message length (thoughtfulness)
+  if (message.length > 50) score += 1;   // Basic length
+  if (message.length > 100) score += 2;  // More substantial
+  if (message.length > 200) score += 3;  // Detailed message
+  
+  // Cap length points to prevent spam
+  const lengthPoints = Math.min(7, Math.floor(message.length / 50));
+  score += lengthPoints;
+  
+  // Points for content with topics (relevant discussion)
+  if (analysis.topics && analysis.topics.length > 0) {
+    score += Math.min(5, analysis.topics.length);
+  }
+  
+  // Points for sentiment (promoting positive interaction)
+  if (analysis.sentiment === 'positive') score += 3;
+  
+  // Points for constructive crypto analysis
+  if (analysis.cryptoSentiment && analysis.cryptoSentiment !== 'neutral') {
+    score += 2;
+  }
+  
+  // Points for mentioning specific cryptocurrencies (knowledgeable)
+  if (analysis.mentionedCoins && analysis.mentionedCoins.length > 0) {
+    score += Math.min(5, analysis.mentionedCoins.length * 2);
+  }
+  
+  // Points for detailed intent (questions show engagement)
+  if (analysis.intent === 'question') score += 2;
+  
+  // Penalty for potential spam or low-quality
+  if (message.length < 5) score = 0;
+  
+  // Ensure minimum score is 1 for any message that passes checks
+  return Math.max(1, score);
+};
+
+// Get chat leaderboard with quality-based point system
+messageSchema.statics.getChatLeaderboard = async function(chatId, limit = 10) {
+  try {
+    console.log(`Getting quality-based leaderboard for chat ${chatId}`);
+    
+    // First check if we have any messages
+    const messageCount = await this.countDocuments({ chatId });
+    console.log(`Found ${messageCount} messages for chat ${chatId}`);
+    
+    if (messageCount === 0) {
+      return [];
+    }
+    
+    // Get users with highest quality points
+    const leaderboard = await this.aggregate([
+      { $match: { chatId: chatId } },
+      {
+        $group: {
+          _id: {
+            userId: "$userId",
+            username: "$username",
+            firstName: "$firstName",
+            lastName: "$lastName"
+          },
+          totalPoints: { $sum: "$qualityScore" },
+          messageCount: { $sum: 1 },
+          averagePoints: { $avg: "$qualityScore" },
+          totalPositive: { 
+            $sum: { 
+              $cond: [{ $eq: ["$analysis.sentiment", "positive"] }, 1, 0] 
+            }
+          },
+          totalQuestions: { 
+            $sum: { 
+              $cond: [{ $eq: ["$analysis.intent", "question"] }, 1, 0] 
+            }
+          },
+          highestScore: { $max: "$qualityScore" },
+          firstMessage: { $min: "$date" },
+          lastMessage: { $max: "$date" },
+          topTopics: { $push: "$analysis.topics" }
+        }
+      },
+      {
+        $project: {
+          _id: 1,
+          totalPoints: 1, 
+          messageCount: 1,
+          averagePoints: { $round: ["$averagePoints", 1] },
+          positiveRate: { 
+            $round: [{ $multiply: [{ $divide: ["$totalPositive", "$messageCount"] }, 100] }, 0]
+          },
+          questionsRate: { 
+            $round: [{ $multiply: [{ $divide: ["$totalQuestions", "$messageCount"] }, 100] }, 0]
+          },
+          highestScore: 1,
+          daysSinceFirstMessage: { 
+            $round: [{ $divide: [{ $subtract: [new Date(), "$firstMessage"] }, 1000 * 60 * 60 * 24] }, 0] 
+          },
+          lastActive: "$lastMessage",
+          // Flatten and get top 3 topics per user
+          topTopics: { $slice: [{ $reduce: {
+              input: { $filter: { input: "$topTopics", as: "topics", cond: { $ne: ["$$topics", []] } } },
+              initialValue: [],
+              in: { $concatArrays: ["$$value", "$$this"] }
+            }}, 0, 3] }
+        }
+      },
+      { $sort: { totalPoints: -1 } },
+      { $limit: limit }
+    ]).exec();
+    
+    console.log(`Leaderboard retrieved successfully for chat ${chatId}: ${leaderboard.length} users`);
+    return leaderboard;
+  } catch (error) {
+    console.error(`Error getting leaderboard for chat ${chatId}:`, error);
     throw error;
   }
 };
