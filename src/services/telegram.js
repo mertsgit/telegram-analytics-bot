@@ -581,7 +581,7 @@ _Tracking quality-based points since bot was added_`;
     bot.on('message', async (ctx) => {
       try {
         // Skip if not in a group chat
-        if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+        if (!ctx.chat || (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup')) {
           return;
         }
         
@@ -592,7 +592,7 @@ _Tracking quality-based points since bot was added_`;
         }
 
         // Skip non-text messages
-        if (!ctx.message.text) {
+        if (!ctx.message || !ctx.message.text) {
           return;
         }
         
@@ -618,29 +618,82 @@ _Tracking quality-based points since bot was added_`;
         console.log(`Processing message in chat ${ctx.chat.id}: "${messageData.text.substring(0, 50)}${messageData.text.length > 50 ? '...' : ''}"`);
         
         // Analyze the message with OpenAI
-        const analysis = await analyzeMessage(messageData.text);
+        let analysis;
+        try {
+          analysis = await analyzeMessage(messageData.text);
+          if (!analysis) {
+            throw new Error('Received null or undefined from analyzeMessage');
+          }
+        } catch (aiError) {
+          console.error(`OpenAI analysis error: ${aiError.message}`);
+          // Provide fallback analysis to avoid database validation errors
+          analysis = {
+            sentiment: 'neutral',
+            topics: [],
+            intent: 'statement',
+            cryptoSentiment: 'neutral',
+            mentionedCoins: [],
+            scamIndicators: [],
+            priceTargets: {}
+          };
+        }
+        
         messageData.analysis = analysis;
         
         // Calculate message quality score
-        const qualityScore = Message.calculateQualityScore(messageData.text, analysis);
+        let qualityScore = 1; // Default score
+        try {
+          qualityScore = Message.calculateQualityScore(messageData.text, analysis);
+        } catch (scoreError) {
+          console.error(`Error calculating quality score: ${scoreError.message}`);
+        }
+        
         messageData.qualityScore = qualityScore;
         
         // Log analysis results and quality score
         console.log(`Message analysis for chat ${ctx.chat.id}:`, {
           sentiment: analysis.sentiment,
-          topics: analysis.topics,
+          topics: analysis.topics ? analysis.topics.slice(0, 3) : [],
           intent: analysis.intent,
           cryptoSentiment: analysis.cryptoSentiment,
-          mentionedCoins: analysis.mentionedCoins,
-          scamIndicators: analysis.scamIndicators,
+          mentionedCoins: analysis.mentionedCoins ? analysis.mentionedCoins.slice(0, 3) : [],
           qualityScore: qualityScore
         });
         
+        // Ensure fields conform to schema requirements
+        if (!['positive', 'negative', 'neutral', 'unknown'].includes(messageData.analysis.sentiment)) {
+          messageData.analysis.sentiment = 'neutral';
+        }
+        
+        if (!['question', 'statement', 'command', 'greeting', 'opinion', 'other', 'unknown'].includes(messageData.analysis.intent)) {
+          messageData.analysis.intent = 'statement';
+        }
+        
+        if (!['bullish', 'bearish', 'neutral', 'unknown'].includes(messageData.analysis.cryptoSentiment)) {
+          messageData.analysis.cryptoSentiment = 'neutral';
+        }
+        
         // Save message to database
-        const savedMessage = await new Message(messageData).save();
-        console.log(`Saved message ${savedMessage.messageId} from chat ${savedMessage.chatId} (${ctx.chat.title}) with quality score: ${qualityScore}`);
+        try {
+          const savedMessage = await new Message(messageData).save();
+          console.log(`Saved message ${savedMessage.messageId} from chat ${savedMessage.chatId} (${ctx.chat.title}) with quality score: ${qualityScore}`);
+        } catch (dbError) {
+          console.error(`Error saving message to database: ${dbError.message}`);
+          console.error('Database error details:', dbError);
+          console.error('Message data causing error:', JSON.stringify({
+            chatId: messageData.chatId,
+            userId: messageData.userId,
+            text: messageData.text.substring(0, 20) + '...',
+            analysis: {
+              sentiment: messageData.analysis.sentiment,
+              intent: messageData.analysis.intent,
+              cryptoSentiment: messageData.analysis.cryptoSentiment,
+              topicsCount: messageData.analysis.topics?.length
+            }
+          }));
+        }
       } catch (error) {
-        console.error(`Error processing message in chat ${ctx.chat.id}:`, error);
+        console.error(`Error processing message in chat ${ctx.chat?.id || 'unknown'}:`, error);
         console.error('Error stack:', error.stack);
         // Don't notify users for individual message processing errors
       }
@@ -665,11 +718,26 @@ _Tracking quality-based points since bot was added_`;
     // Handle errors
     bot.catch((err, ctx) => {
       console.error(`Telegram bot error: ${err.message}`);
-      console.error('Error context:', ctx);
+      console.error('Full error object:', JSON.stringify(err, Object.getOwnPropertyNames(err)));
+      console.error('Error stack:', err.stack);
+      
+      // Log context if available
+      if (ctx) {
+        try {
+          console.error('Context chat:', ctx.chat?.id, ctx.chat?.title);
+          console.error('Context update:', JSON.stringify(ctx.update));
+        } catch (logError) {
+          console.error('Error logging context:', logError.message);
+        }
+      } else {
+        console.error('No context available with this error');
+      }
       
       // Try to notify user
       try {
-        ctx.reply('Sorry, an error occurred. Our team has been notified.');
+        if (ctx && ctx.reply) {
+          ctx.reply('Sorry, an error occurred. Our team has been notified.');
+        }
       } catch (replyError) {
         console.error(`Could not send error reply: ${replyError.message}`);
       }
