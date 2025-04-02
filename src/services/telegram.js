@@ -45,7 +45,7 @@ const formatServiceStatusMessage = () => {
   const status = getServiceStatus();
   return `
 🤖 *Bot Health Status*
-- Bot: ${status.botInitialized ? '✅ Running' : '❌ Not running'}
+${status.botInitialized ? '- Bot: ✅ Running' : ''}
 - Database: ${status.databaseConnected ? '✅ Connected' : '❌ Disconnected'}
 - OpenAI: ${status.openAIAvailable ? '✅ Available' : '❌ Unavailable'}
 ${status.launchRetryCount > 0 ? `- Launch retries: ${status.launchRetryCount}/${MAX_LAUNCH_RETRIES}` : ''}
