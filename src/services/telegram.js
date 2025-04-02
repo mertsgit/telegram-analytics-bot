@@ -200,11 +200,9 @@ const initBot = async () => {
         
         // Use the static method to get chat stats
         const stats = await Message.getChatStats(chatId);
-        console.log(`Stats retrieved for chat ${chatId}:`, JSON.stringify(stats, null, 2));
         
-        if (stats.totalMessages === 0) {
-          console.log(`No messages found for chat ${chatId}`);
-          return await ctx.reply('No messages have been tracked in this chat yet.');
+        if (!stats || stats.totalMessages === 0) {
+          return await ctx.reply('No messages have been tracked in this chat yet. Send some messages first!');
         }
         
         // Format user names
@@ -218,7 +216,7 @@ const initBot = async () => {
           }
         };
         
-        // Build the stats message for this specific chat
+        // Build the stats message
         const statsMessage = `
 📊 *Chat Statistics for "${ctx.chat.title}"*
 
@@ -226,21 +224,21 @@ Total messages tracked: ${stats.totalMessages}
 Unique users: ${stats.uniqueUsers}
 
 ${stats.sentiments.length > 0 ? `*Sentiment breakdown:*
-${stats.sentiments.map(s => `- ${s._id || 'unknown'}: ${s.count} (${Math.round(s.count/stats.totalMessages*100)}%)`).join('\n')}` : 'No sentiment data available'}
+${stats.sentiments.map(s => `- ${s._id || 'unknown'}: ${s.count} (${Math.round(s.count/stats.totalMessages*100)}%)`).join('\n')}` : 'No sentiment data available yet'}
 
 ${stats.topics.length > 0 ? `*Top 5 topics:*
-${stats.topics.slice(0, 5).map(t => `- ${t._id}: ${t.count} mentions`).join('\n')}` : 'No topic data available'}
+${stats.topics.map(t => `- ${t._id}: ${t.count} mentions`).join('\n')}` : 'No topic data available yet'}
 
 ${stats.activeUsers.length > 0 ? `*Most active users:*
-${stats.activeUsers.slice(0, 5).map(u => `- ${formatUserName(u)}: ${u.messageCount} messages`).join('\n')}` : 'No user activity data available'}
-        `;
+${stats.activeUsers.map(u => `- ${formatUserName(u)}: ${u.messageCount} messages`).join('\n')}` : 'No user activity data available yet'}
+
+_Use /topics for a more detailed topic analysis_`;
         
-        console.log(`Sending stats message to chat ${chatId}`);
         await ctx.reply(statsMessage, { parse_mode: 'Markdown' });
       } catch (error) {
-        console.error(`Error generating stats for chat ${ctx.chat.id}:`, error);
+        console.error(`Error in stats command for chat ${ctx.chat.id}:`, error);
         console.error('Error stack:', error.stack);
-        await ctx.reply('Sorry, there was an error generating statistics. Please try again later or check the bot status with /status.');
+        await ctx.reply('Sorry, there was an error generating statistics. Please try again in a few minutes. If the problem persists, contact the bot administrator.');
       }
     });
     
@@ -264,40 +262,29 @@ ${stats.activeUsers.slice(0, 5).map(u => `- ${formatUserName(u)}: ${u.messageCou
         const chatId = ctx.chat.id;
         console.log(`Fetching topics for chat ${chatId}`);
         
-        // Get top topics in this chat
-        const topicsAggregation = await Message.aggregate([
-          { $match: { chatId } },
-          { $unwind: { path: "$analysis.topics", preserveNullAndEmptyArrays: false } },
-          { $group: {
-              _id: "$analysis.topics",
-              count: { $sum: 1 }
-            }
-          },
-          { $sort: { count: -1 } },
-          { $limit: 15 }
-        ]).exec(); // Add .exec() to ensure proper promise handling
+        // Get topics using the new static method
+        const topics = await Message.getChatTopics(chatId);
         
-        console.log(`Topics retrieved for chat ${chatId}:`, JSON.stringify(topicsAggregation, null, 2));
-        
-        if (!topicsAggregation || topicsAggregation.length === 0) {
-          console.log(`No topics found for chat ${chatId}`);
-          return await ctx.reply('No topics have been identified in this chat yet. Try sending some messages first!');
+        if (!topics || topics.length === 0) {
+          return await ctx.reply('No topics have been identified in this chat yet. Send some messages first!');
         }
         
         const topicsMessage = `
-📋 *Top Topics in "${ctx.chat.title}"*
+📋 *Topic Analysis for "${ctx.chat.title}"*
 
-${topicsAggregation.map((t, i) => `${i+1}. ${t._id}: ${t.count} mentions`).join('\n')}
+${topics.map((t, i) => {
+  const lastMentioned = new Date(t.lastMentioned).toLocaleDateString();
+  return `${i+1}. *${t._id}*: ${t.count} mentions (Last: ${lastMentioned})`;
+}).join('\n')}
 
-_Note: Topics are identified from messages sent after the bot was added to the group._
-        `;
+_Topics are identified from messages sent after the bot was added to the group._
+_Use /stats for general chat statistics_`;
         
-        console.log(`Sending topics message to chat ${chatId}`);
         await ctx.reply(topicsMessage, { parse_mode: 'Markdown' });
       } catch (error) {
-        console.error(`Error generating topics for chat ${ctx.chat.id}:`, error);
+        console.error(`Error in topics command for chat ${ctx.chat.id}:`, error);
         console.error('Error stack:', error.stack);
-        await ctx.reply('Sorry, there was an error generating the topics list. Please try again later or check the bot status with /status.');
+        await ctx.reply('Sorry, there was an error generating the topics list. Please try again in a few minutes. If the problem persists, contact the bot administrator.');
       }
     });
 
