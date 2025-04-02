@@ -550,7 +550,7 @@ _Data from CoinGecko_
 
 ${leaderboardEntries}
 <b>How points are earned:</b>
-- Message quality and length
+- Content quality and relevance 
 - Positive sentiment and helpfulness
 - Relevant topic discussions
 - Asking thoughtful questions

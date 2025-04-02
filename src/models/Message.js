@@ -394,15 +394,6 @@ messageSchema.statics.calculateQualityScore = function(message, analysis) {
   // Base points for sending a message
   score += 1;
   
-  // Points based on message length (thoughtfulness)
-  if (message.length > 50) score += 1;   // Basic length
-  if (message.length > 100) score += 2;  // More substantial
-  if (message.length > 200) score += 3;  // Detailed message
-  
-  // Cap length points to prevent spam
-  const lengthPoints = Math.min(7, Math.floor(message.length / 50));
-  score += lengthPoints;
-  
   // Points for content with topics (relevant discussion)
   if (analysis.topics && analysis.topics.length > 0) {
     score += Math.min(5, analysis.topics.length);
