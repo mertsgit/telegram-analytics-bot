@@ -44,7 +44,7 @@ const getServiceStatus = () => {
 const formatServiceStatusMessage = () => {
   const status = getServiceStatus();
   return `
-🤖 *Bot Status*
+🤖 *Bot Health Status*
 - Bot: ${status.botInitialized ? '✅ Running' : '❌ Not running'}
 - Database: ${status.databaseConnected ? '✅ Connected' : '❌ Disconnected'}
 - OpenAI: ${status.openAIAvailable ? '✅ Available' : '❌ Unavailable'}
@@ -127,9 +127,10 @@ const initBot = async () => {
       await bot.telegram.setMyCommands([
         { command: 'start', description: 'Start the bot' },
         { command: 'help', description: 'Show help' },
-        { command: 'stats', description: 'Show chat statistics' },
-        { command: 'topics', description: 'Show top topics in this chat' },
-        { command: 'status', description: 'Check bot service status' }
+        { command: 'stats', description: 'Show sentiment analysis' },
+        { command: 'topics', description: 'Show categorized topics' },
+        { command: 'leaderboard', description: 'Show most active users' },
+        { command: 'health', description: 'Check bot service health' }
       ]);
     } catch (error) {
       console.error(`Failed to set bot commands: ${error.message}`);
@@ -158,9 +159,10 @@ const initBot = async () => {
           'Commands:\n' +
           '/start - Start the bot\n' +
           '/help - Show this help message\n' +
-          '/stats - Show statistics about messages in this chat\n' +
-          '/topics - Show top topics discussed in this chat\n' +
-          '/status - Check if all bot services are working properly'
+          '/stats - Show sentiment analysis and basic stats\n' +
+          '/topics - Show categorized topics in this chat\n' +
+          '/leaderboard - Show top 10 most active users\n' +
+          '/health - Check if all bot services are working properly'
         );
       } catch (error) {
         console.error(`Error handling help command: ${error.message}`);
@@ -168,13 +170,13 @@ const initBot = async () => {
       }
     });
 
-    // Handle status command
-    bot.command('status', async (ctx) => {
+    // Handle health command (renamed from status)
+    bot.command('health', async (ctx) => {
       try {
         await ctx.reply(formatServiceStatusMessage(), { parse_mode: 'Markdown' });
       } catch (error) {
-        console.error(`Error handling status command: ${error.message}`);
-        await ctx.reply('Sorry, there was an error checking the service status.');
+        console.error(`Error handling health command: ${error.message}`);
+        await ctx.reply('Sorry, there was an error checking the service health.');
       }
     });
 
@@ -205,34 +207,57 @@ const initBot = async () => {
           return await ctx.reply('No messages have been tracked in this chat yet. Send some messages first!');
         }
         
-        // Format user names
-        const formatUserName = (user) => {
-          if (user._id.username) {
-            return `@${user._id.username}`;
-          } else {
-            const firstName = user._id.firstName || '';
-            const lastName = user._id.lastName || '';
-            return `${firstName} ${lastName}`.trim() || `User ${user._id.userId}`;
-          }
+        // Format sentiment data for visualization
+        const sentimentData = {
+          positive: 0,
+          negative: 0,
+          neutral: 0,
+          unknown: 0
         };
         
-        // Build the stats message
+        stats.sentiments.forEach(s => {
+          if (s._id in sentimentData) {
+            sentimentData[s._id] = s.count;
+          }
+        });
+        
+        const totalSentiment = Object.values(sentimentData).reduce((a, b) => a + b, 0);
+        const sentimentPercentages = {};
+        for (const [key, value] of Object.entries(sentimentData)) {
+          sentimentPercentages[key] = totalSentiment > 0 ? Math.round((value / totalSentiment) * 100) : 0;
+        }
+        
+        // Format sentiment visualization
+        const sentimentBars = Object.keys(sentimentData)
+          .filter(key => key !== 'unknown') // Filter out unknown
+          .map(sentiment => {
+            const percentage = sentimentPercentages[sentiment];
+            const barLength = Math.max(1, Math.round(percentage / 5)); // 1 bar per 5%
+            const bar = '█'.repeat(barLength);
+            return `${sentiment === 'positive' ? '😀' : sentiment === 'negative' ? '😠' : '😐'} ${sentiment}: ${bar} ${percentage}%`;
+          }).join('\n');
+        
+        // Check for crypto-related topics
+        const cryptoTopics = stats.topics
+          .filter(t => /bitcoin|btc|eth|ethereum|crypto|token|blockchain|solana|sol|nft|defi|trading|coin/i.test(t._id))
+          .slice(0, 5);
+        
+        // Build the stats message with focus on sentiment
         const statsMessage = `
-📊 *Chat Statistics for "${ctx.chat.title}"*
+📊 *Sentiment Analysis for "${ctx.chat.title}"*
 
-Total messages tracked: ${stats.totalMessages}
-Unique users: ${stats.uniqueUsers}
+${sentimentBars || 'No sentiment data available yet'}
 
-${stats.sentiments.length > 0 ? `*Sentiment breakdown:*
-${stats.sentiments.map(s => `- ${s._id || 'unknown'}: ${s.count} (${Math.round(s.count/stats.totalMessages*100)}%)`).join('\n')}` : 'No sentiment data available yet'}
+*Chat Activity:*
+- Total messages: ${stats.totalMessages}
+- Active users: ${stats.uniqueUsers}
+- Messages per user: ${stats.uniqueUsers ? Math.round(stats.totalMessages / stats.uniqueUsers * 10) / 10 : 0}
 
-${stats.topics.length > 0 ? `*Top 5 topics:*
-${stats.topics.map(t => `- ${t._id}: ${t.count} mentions`).join('\n')}` : 'No topic data available yet'}
+${cryptoTopics.length > 0 ? `*Crypto Topics:*
+${cryptoTopics.map(t => `- ${t._id}: ${t.count} mentions`).join('\n')}` : ''}
 
-${stats.activeUsers.length > 0 ? `*Most active users:*
-${stats.activeUsers.map(u => `- ${formatUserName(u)}: ${u.messageCount} messages`).join('\n')}` : 'No user activity data available yet'}
-
-_Use /topics for a more detailed topic analysis_`;
+_Use /topics for detailed topic analysis_
+_Use /leaderboard to see most active users_`;
         
         await ctx.reply(statsMessage, { parse_mode: 'Markdown' });
       } catch (error) {
@@ -262,29 +287,154 @@ _Use /topics for a more detailed topic analysis_`;
         const chatId = ctx.chat.id;
         console.log(`Fetching topics for chat ${chatId}`);
         
-        // Get topics using the new static method
+        // Get topics using the static method
         const topics = await Message.getChatTopics(chatId);
         
         if (!topics || topics.length === 0) {
           return await ctx.reply('No topics have been identified in this chat yet. Send some messages first!');
         }
         
-        const topicsMessage = `
-📋 *Topic Analysis for "${ctx.chat.title}"*
-
-${topics.map((t, i) => {
-  const lastMentioned = new Date(t.lastMentioned).toLocaleDateString();
-  return `${i+1}. *${t._id}*: ${t.count} mentions (Last: ${lastMentioned})`;
-}).join('\n')}
-
-_Topics are identified from messages sent after the bot was added to the group._
-_Use /stats for general chat statistics_`;
+        // Categorize topics
+        const categories = {
+          crypto: {
+            name: "💰 Cryptocurrency",
+            topics: [],
+            regex: /bitcoin|btc|eth|ethereum|crypto|token|blockchain|solana|sol|nft|defi|trading|coin|market|price|bull|bear|wallet|exchange|dex|binance|chainlink|link|cardano|ada|xrp|usdt|usdc|stablecoin/i
+          },
+          technology: {
+            name: "💻 Technology",
+            topics: [],
+            regex: /tech|software|hardware|web|app|code|developer|programming|ai|computer|internet|mobile|website|digital|online|device|gadget|electronics/i
+          },
+          finance: {
+            name: "📈 Finance/Markets",
+            topics: [],
+            regex: /stock|finance|market|investing|investment|fund|bank|money|profit|loss|trader|trading|chart|analysis|buy|sell|portfolio|asset|dividend/i
+          },
+          general: {
+            name: "🔍 General Topics",
+            topics: []
+          }
+        };
+        
+        // Categorize each topic
+        topics.forEach(topic => {
+          let categorized = false;
+          for (const [key, category] of Object.entries(categories)) {
+            if (key !== 'general' && category.regex && category.regex.test(topic._id)) {
+              category.topics.push(topic);
+              categorized = true;
+              break;
+            }
+          }
+          if (!categorized) {
+            categories.general.topics.push(topic);
+          }
+        });
+        
+        // Build message with categories
+        let topicsMessage = `📋 *Topics in "${ctx.chat.title}"*\n\n`;
+        
+        for (const category of Object.values(categories)) {
+          if (category.topics.length > 0) {
+            topicsMessage += `*${category.name}:*\n`;
+            category.topics.slice(0, 5).forEach((t, i) => {
+              const lastMentioned = new Date(t.lastMentioned).toLocaleDateString();
+              topicsMessage += `${i+1}. *${t._id}*: ${t.count} mentions (Last: ${lastMentioned})\n`;
+            });
+            topicsMessage += '\n';
+          }
+        }
+        
+        topicsMessage += '_Topics are identified from messages sent after the bot was added to the group._\n_Use /stats for sentiment analysis_';
         
         await ctx.reply(topicsMessage, { parse_mode: 'Markdown' });
       } catch (error) {
         console.error(`Error in topics command for chat ${ctx.chat.id}:`, error);
         console.error('Error stack:', error.stack);
         await ctx.reply('Sorry, there was an error generating the topics list. Please try again in a few minutes. If the problem persists, contact the bot administrator.');
+      }
+    });
+
+    // Add leaderboard command
+    bot.command('leaderboard', async (ctx) => {
+      try {
+        console.log(`Leaderboard command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'})`);
+        
+        // Check if database is connected
+        if (!isDBConnected()) {
+          console.error('Leaderboard command failed: Database not connected');
+          return await ctx.reply('⚠️ Database connection is unavailable. Leaderboard cannot be retrieved at this time.');
+        }
+
+        // Only allow in group chats
+        if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+          console.log('Leaderboard command rejected: Not a group chat');
+          return await ctx.reply('This command only works in group chats.');
+        }
+        
+        const chatId = ctx.chat.id;
+        console.log(`Fetching leaderboard for chat ${chatId}`);
+        
+        // Get most active users
+        const leaderboard = await Message.aggregate([
+          { $match: { chatId: chatId } },
+          {
+            $group: {
+              _id: {
+                userId: "$userId",
+                username: "$username",
+                firstName: "$firstName",
+                lastName: "$lastName"
+              },
+              messageCount: { $sum: 1 },
+              firstMessage: { $min: "$date" },
+              lastMessage: { $max: "$date" }
+            }
+          },
+          { $sort: { messageCount: -1 } },
+          { $limit: 10 }
+        ]).exec();
+        
+        if (!leaderboard || leaderboard.length === 0) {
+          return await ctx.reply('No messages have been tracked in this chat yet. Send some messages first!');
+        }
+        
+        // Format user names
+        const formatUserName = (user) => {
+          if (user._id.username) {
+            return `@${user._id.username}`;
+          } else {
+            const firstName = user._id.firstName || '';
+            const lastName = user._id.lastName || '';
+            return `${firstName} ${lastName}`.trim() || `User ${user._id.userId}`;
+          }
+        };
+        
+        // Create leaderboard message with medals
+        const leaderboardMessage = `
+🏆 *Message Leaderboard for "${ctx.chat.title}"*
+
+${leaderboard.map((user, index) => {
+  let prefix = `${index + 1}.`;
+  if (index === 0) prefix = '🥇';
+  if (index === 1) prefix = '🥈';
+  if (index === 2) prefix = '🥉';
+  
+  const activity = Math.round((Date.now() - new Date(user.firstMessage).getTime()) / (1000 * 60 * 60 * 24));
+  const messagesPerDay = activity > 0 ? Math.round((user.messageCount / activity) * 10) / 10 : user.messageCount;
+  
+  return `${prefix} ${formatUserName(user)}: ${user.messageCount} messages${activity > 0 ? ` (${messagesPerDay}/day)` : ''}`;
+}).join('\n')}
+
+_Tracking messages since bot was added to the group_
+_Use /stats for group sentiment analysis_`;
+        
+        await ctx.reply(leaderboardMessage, { parse_mode: 'Markdown' });
+      } catch (error) {
+        console.error(`Error in leaderboard command for chat ${ctx.chat.id}:`, error);
+        console.error('Error stack:', error.stack);
+        await ctx.reply('Sorry, there was an error generating the leaderboard. Please try again in a few minutes.');
       }
     });
 
