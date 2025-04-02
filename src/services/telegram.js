@@ -428,23 +428,12 @@ _Use /leaderboard to see most active users_`;
             }
           };
           
-          // Get emoji for sentiment
-          const getSentimentEmoji = (sentiment) => {
-            switch (sentiment) {
-              case 'positive': return '😀';
-              case 'negative': return '😠';
-              case 'neutral': return '😐';
-              default: return '😶';
-            }
-          };
-          
-          // Format the leaderboard message
+          // Format the leaderboard message - simplified version
           const leaderboardMessage = `
 🏆 *Activity Leaderboard for "${ctx.chat.title}"*
 
 Total messages tracked: ${result.totalMessages}
 Active users: ${result.uniqueUsers}
-Time period: All time
 
 ${result.leaderboard.map((user, index) => {
   try {
@@ -454,18 +443,19 @@ ${result.leaderboard.map((user, index) => {
     if (index === 1) prefix = '🥈';
     if (index === 2) prefix = '🥉';
     
-    // Format message count and activity stats
-    const userName = formatUserName(user);
-    const messageCount = user.messageCount;
-    const messagesPerDay = user.messagesPerDay ? Math.round(user.messagesPerDay * 10) / 10 : 0;
-    const avgLength = user.avgMessageLength ? Math.round(user.avgMessageLength) : 0;
-    const sentimentEmoji = getSentimentEmoji(user.dominantSentiment);
+    // Calculate days since first message for messages per day
+    let messagesPerDay = 0;
+    let daysActive = 0;
     
-    // Calculate engagement percentage
+    if (user.firstMessage) {
+      daysActive = Math.max(1, Math.round((Date.now() - new Date(user.firstMessage).getTime()) / (1000 * 60 * 60 * 24)));
+      messagesPerDay = Math.round((user.messageCount / daysActive) * 10) / 10;
+    }
+    
+    // Simple engagement percentage
     const engagementPct = Math.round((user.messageCount / result.totalMessages) * 100);
     
-    return `${prefix} ${userName}: ${messageCount} messages ${sentimentEmoji}
-   • ${messagesPerDay}/day • ${engagementPct}% of chat • Avg ${avgLength} chars`;
+    return `${prefix} ${formatUserName(user)}: ${user.messageCount} messages\n   • ${messagesPerDay}/day • ${engagementPct}% of chat`;
   } catch (error) {
     console.error(`Error formatting leaderboard entry for index ${index}:`, error);
     return `${index + 1}. Error formatting user`;
@@ -480,6 +470,7 @@ _Use /stats for sentiment analysis in this group_`;
           
         } catch (dbError) {
           console.error(`Database error in leaderboard command for chat ${ctx.chat.id}:`, dbError);
+          console.error('Database error stack:', dbError.stack);
           throw new Error(`Database error: ${dbError.message}`);
         }
       } catch (error) {

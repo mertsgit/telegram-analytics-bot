@@ -407,7 +407,7 @@ messageSchema.statics.getChatLeaderboard = async function(chatId, limit = 10) {
     // Count unique users
     const uniqueUsers = await this.distinct('userId', { chatId });
     
-    // Get most active users with detailed stats
+    // Simplified query - core functionality only
     const leaderboard = await this.aggregate([
       { $match: { chatId: chatId } },
       // Group by user
@@ -421,78 +421,7 @@ messageSchema.statics.getChatLeaderboard = async function(chatId, limit = 10) {
           },
           messageCount: { $sum: 1 },
           firstMessage: { $min: "$date" },
-          lastMessage: { $max: "$date" },
-          avgMessageLength: { $avg: { $strLenCP: "$text" } },
-          sentiments: { 
-            $push: "$analysis.sentiment" 
-          }
-        }
-      },
-      // Add sentiment stats
-      {
-        $addFields: {
-          positiveCount: {
-            $size: {
-              $filter: {
-                input: "$sentiments",
-                as: "sentiment",
-                cond: { $eq: ["$$sentiment", "positive"] }
-              }
-            }
-          },
-          negativeCount: {
-            $size: {
-              $filter: {
-                input: "$sentiments",
-                as: "sentiment",
-                cond: { $eq: ["$$sentiment", "negative"] }
-              }
-            }
-          },
-          neutralCount: {
-            $size: {
-              $filter: {
-                input: "$sentiments",
-                as: "sentiment",
-                cond: { $eq: ["$$sentiment", "neutral"] }
-              }
-            }
-          }
-        }
-      },
-      // Calculate activity metrics
-      {
-        $addFields: {
-          daysSinceFirstMessage: {
-            $divide: [
-              { $subtract: [new Date(), "$firstMessage"] },
-              1000 * 60 * 60 * 24
-            ]
-          }
-        }
-      },
-      {
-        $addFields: {
-          messagesPerDay: {
-            $cond: {
-              if: { $gt: ["$daysSinceFirstMessage", 0] },
-              then: { $divide: ["$messageCount", "$daysSinceFirstMessage"] },
-              else: "$messageCount"
-            }
-          },
-          dominantSentiment: {
-            $cond: {
-              if: { $gt: ["$positiveCount", { $max: ["$negativeCount", "$neutralCount"] }] },
-              then: "positive",
-              else: {
-                $cond: {
-                  if: { $gt: ["$negativeCount", "$neutralCount"] },
-                  then: "negative",
-                  else: "neutral"
-                }
-              }
-            }
-          }
+          lastMessage: { $max: "$date" }
         }
       },
       // Sort by message count descending
