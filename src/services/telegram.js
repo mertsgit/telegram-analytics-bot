@@ -227,15 +227,24 @@ const initBot = async () => {
           sentimentPercentages[key] = totalSentiment > 0 ? Math.round((value / totalSentiment) * 100) : 0;
         }
         
-        // Format sentiment visualization
-        const sentimentBars = Object.keys(sentimentData)
-          .filter(key => key !== 'unknown') // Filter out unknown
-          .map(sentiment => {
-            const percentage = sentimentPercentages[sentiment];
-            const barLength = Math.max(1, Math.round(percentage / 5)); // 1 bar per 5%
-            const bar = '█'.repeat(barLength);
-            return `${sentiment === 'positive' ? '😀' : sentiment === 'negative' ? '😠' : '😐'} ${sentiment}: ${bar} ${percentage}%`;
-          }).join('\n');
+        // Format sentiment visualization with numbers instead of emojis
+        const sentiments = ['positive', 'negative', 'neutral'];
+        const sentimentBars = sentiments.map((sentiment, index) => {
+          const percentage = sentimentPercentages[sentiment] || 0;
+          const barLength = Math.max(1, Math.round(percentage / 5)); // 1 bar per 5%
+          const bar = '█'.repeat(barLength);
+          return `${index + 1}. ${sentiment}: ${bar} ${percentage}%`;
+        }).join('\n');
+        
+        // Determine overall sentiment tone
+        let overallTone = "neutral";
+        if (sentimentPercentages.positive > sentimentPercentages.negative && 
+            sentimentPercentages.positive > sentimentPercentages.neutral) {
+          overallTone = "positive";
+        } else if (sentimentPercentages.negative > sentimentPercentages.positive && 
+                  sentimentPercentages.negative > sentimentPercentages.neutral) {
+          overallTone = "negative";
+        }
         
         // Check for crypto-related topics
         const cryptoTopics = stats.topics
@@ -246,15 +255,18 @@ const initBot = async () => {
         const statsMessage = `
 📊 *Sentiment Analysis for "${ctx.chat.title}"*
 
-${sentimentBars || 'No sentiment data available yet'}
+${sentimentBars}
+
+*Overall sentiment:* The group has a predominantly ${overallTone} tone (${sentimentPercentages[overallTone]}%)
 
 *Chat Activity:*
 - Total messages: ${stats.totalMessages}
 - Active users: ${stats.uniqueUsers}
 - Messages per user: ${stats.uniqueUsers ? Math.round(stats.totalMessages / stats.uniqueUsers * 10) / 10 : 0}
+- Analysis period: Last ${Math.min(stats.totalMessages, 1000)} messages
 
 ${cryptoTopics.length > 0 ? `*Crypto Topics:*
-${cryptoTopics.map(t => `- ${t._id}: ${t.count} mentions`).join('\n')}` : ''}
+${cryptoTopics.map((t, i) => `${i+1}. ${t._id}: ${t.count} mentions (${Math.round(t.count/stats.totalMessages*100)}% of messages)`).join('\n')}` : ''}
 
 _Use /topics for detailed topic analysis_
 _Use /leaderboard to see most active users_`;
