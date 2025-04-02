@@ -378,7 +378,7 @@ _Use /leaderboard to see most active users_`;
       }
     });
 
-    // Add leaderboard command
+    // Add or update the leaderboard command
     bot.command('leaderboard', async (ctx) => {
       try {
         console.log(`Leaderboard command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'})`);
@@ -399,14 +399,17 @@ _Use /leaderboard to see most active users_`;
         console.log(`Fetching leaderboard for chat ${chatId}`);
         
         try {
-          // Use the new static method to get leaderboard data
-          const leaderboard = await Message.getChatLeaderboard(chatId, 10);
+          // Show typing indicator to the user
+          await ctx.telegram.sendChatAction(chatId, 'typing');
           
-          if (!leaderboard || leaderboard.length === 0) {
+          // Get leaderboard data using model method
+          const result = await Message.getChatLeaderboard(chatId, 10);
+          
+          if (!result.leaderboard || result.leaderboard.length === 0) {
             return await ctx.reply('No messages have been tracked in this chat yet. Send some messages first!');
           }
           
-          // Format user names with safer access
+          // Format user names with safety checks
           const formatUserName = (user) => {
             try {
               if (user && user._id) {
@@ -425,43 +428,53 @@ _Use /leaderboard to see most active users_`;
             }
           };
           
-          // Create leaderboard message with medals
+          // Get emoji for sentiment
+          const getSentimentEmoji = (sentiment) => {
+            switch (sentiment) {
+              case 'positive': return '😀';
+              case 'negative': return '😠';
+              case 'neutral': return '😐';
+              default: return '😶';
+            }
+          };
+          
+          // Format the leaderboard message
           const leaderboardMessage = `
-🏆 *Message Leaderboard for "${ctx.chat.title}"*
+🏆 *Activity Leaderboard for "${ctx.chat.title}"*
 
-${leaderboard.map((user, index) => {
+Total messages tracked: ${result.totalMessages}
+Active users: ${result.uniqueUsers}
+Time period: All time
+
+${result.leaderboard.map((user, index) => {
   try {
+    // Add medals for top 3
     let prefix = `${index + 1}.`;
     if (index === 0) prefix = '🥇';
     if (index === 1) prefix = '🥈';
     if (index === 2) prefix = '🥉';
     
-    // Calculate messages per day
-    let activity = 0;
-    let messagesPerDayText = '';
+    // Format message count and activity stats
+    const userName = formatUserName(user);
+    const messageCount = user.messageCount;
+    const messagesPerDay = user.messagesPerDay ? Math.round(user.messagesPerDay * 10) / 10 : 0;
+    const avgLength = user.avgMessageLength ? Math.round(user.avgMessageLength) : 0;
+    const sentimentEmoji = getSentimentEmoji(user.dominantSentiment);
     
-    try {
-      if (user.firstMessage) {
-        activity = Math.round((Date.now() - new Date(user.firstMessage).getTime()) / (1000 * 60 * 60 * 24));
-        if (activity > 0) {
-          const messagesPerDay = Math.round((user.messageCount / activity) * 10) / 10;
-          messagesPerDayText = ` (${messagesPerDay}/day)`;
-        }
-      }
-    } catch (e) {
-      console.error('Error calculating messages per day:', e);
-    }
+    // Calculate engagement percentage
+    const engagementPct = Math.round((user.messageCount / result.totalMessages) * 100);
     
-    return `${prefix} ${formatUserName(user)}: ${user.messageCount} messages${messagesPerDayText}`;
+    return `${prefix} ${userName}: ${messageCount} messages ${sentimentEmoji}
+   • ${messagesPerDay}/day • ${engagementPct}% of chat • Avg ${avgLength} chars`;
   } catch (error) {
     console.error(`Error formatting leaderboard entry for index ${index}:`, error);
     return `${index + 1}. Error formatting user`;
   }
-}).join('\n')}
+}).join('\n\n')}
 
-_Tracking messages since bot was added to the group_
-_Use /stats for group sentiment analysis_`;
+_Use /stats for sentiment analysis in this group_`;
           
+          // Send the formatted message
           console.log(`Sending leaderboard message to chat ${chatId}`);
           await ctx.reply(leaderboardMessage, { parse_mode: 'Markdown' });
           

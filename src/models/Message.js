@@ -392,12 +392,25 @@ messageSchema.statics.getChatLeaderboard = async function(chatId, limit = 10) {
     console.log(`Found ${messageCount} messages for chat ${chatId}`);
     
     if (messageCount === 0) {
-      return [];
+      return {
+        chatTitle: '',
+        totalMessages: 0,
+        uniqueUsers: 0,
+        leaderboard: []
+      };
     }
-
-    // Get most active users
+    
+    // Get chat title
+    const chatInfo = await this.findOne({ chatId }, { chatTitle: 1 }).sort({ date: -1 });
+    const chatTitle = chatInfo?.chatTitle || '';
+    
+    // Count unique users
+    const uniqueUsers = await this.distinct('userId', { chatId });
+    
+    // Get most active users with detailed stats
     const leaderboard = await this.aggregate([
       { $match: { chatId: chatId } },
+      // Group by user
       {
         $group: {
           _id: {
@@ -408,15 +421,94 @@ messageSchema.statics.getChatLeaderboard = async function(chatId, limit = 10) {
           },
           messageCount: { $sum: 1 },
           firstMessage: { $min: "$date" },
-          lastMessage: { $max: "$date" }
+          lastMessage: { $max: "$date" },
+          avgMessageLength: { $avg: { $strLenCP: "$text" } },
+          sentiments: { 
+            $push: "$analysis.sentiment" 
+          }
         }
       },
+      // Add sentiment stats
+      {
+        $addFields: {
+          positiveCount: {
+            $size: {
+              $filter: {
+                input: "$sentiments",
+                as: "sentiment",
+                cond: { $eq: ["$$sentiment", "positive"] }
+              }
+            }
+          },
+          negativeCount: {
+            $size: {
+              $filter: {
+                input: "$sentiments",
+                as: "sentiment",
+                cond: { $eq: ["$$sentiment", "negative"] }
+              }
+            }
+          },
+          neutralCount: {
+            $size: {
+              $filter: {
+                input: "$sentiments",
+                as: "sentiment",
+                cond: { $eq: ["$$sentiment", "neutral"] }
+              }
+            }
+          }
+        }
+      },
+      // Calculate activity metrics
+      {
+        $addFields: {
+          daysSinceFirstMessage: {
+            $divide: [
+              { $subtract: [new Date(), "$firstMessage"] },
+              1000 * 60 * 60 * 24
+            ]
+          }
+        }
+      },
+      {
+        $addFields: {
+          messagesPerDay: {
+            $cond: {
+              if: { $gt: ["$daysSinceFirstMessage", 0] },
+              then: { $divide: ["$messageCount", "$daysSinceFirstMessage"] },
+              else: "$messageCount"
+            }
+          },
+          dominantSentiment: {
+            $cond: {
+              if: { $gt: ["$positiveCount", { $max: ["$negativeCount", "$neutralCount"] }] },
+              then: "positive",
+              else: {
+                $cond: {
+                  if: { $gt: ["$negativeCount", "$neutralCount"] },
+                  then: "negative",
+                  else: "neutral"
+                }
+              }
+            }
+          }
+        }
+      },
+      // Sort by message count descending
       { $sort: { messageCount: -1 } },
+      // Limit to top N users
       { $limit: limit }
     ]).exec();
 
     console.log(`Leaderboard retrieved successfully for chat ${chatId}: ${leaderboard.length} users`);
-    return leaderboard;
+    
+    return {
+      chatTitle,
+      totalMessages: messageCount,
+      uniqueUsers: uniqueUsers.length,
+      leaderboard: leaderboard || []
+    };
   } catch (error) {
     console.error(`Error getting leaderboard for chat ${chatId}:`, error);
     throw error;
