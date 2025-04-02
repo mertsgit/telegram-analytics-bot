@@ -130,7 +130,6 @@ const initBot = async () => {
         { command: 'help', description: 'Show help' },
         { command: 'stats', description: 'Show sentiment analysis' },
         { command: 'topics', description: 'Show categorized topics' },
-        { command: 'leaderboard', description: 'Show top 10 most active users' },
         { command: 'health', description: 'Check bot service health' },
         { command: 'price', description: 'Check price of a crypto coin' }
       ]);
@@ -163,7 +162,6 @@ const initBot = async () => {
           '/help - Show this help message\n' +
           '/stats - Show sentiment analysis and basic stats\n' +
           '/topics - Show categorized topics in this chat\n' +
-          '/leaderboard - Show top 10 most active users\n' +
           '/health - Check bot service health\n' +
           '/price <coin> - Check current price of a cryptocurrency'
         );
@@ -278,8 +276,7 @@ ${sentimentBars}
 ${cryptoTopics.length > 0 ? `*Crypto Topics:*
 ${cryptoTopics.map((t, i) => `${i+1}. ${t._id}: ${t.count} mentions (${Math.round(t.count/stats.totalMessages*100)}% of messages)`).join('\n')}` : ''}
 
-_Use /topics for detailed topic analysis_
-_Use /leaderboard to see most active users_`;
+_Use /topics for detailed topic analysis_`;
         
         await ctx.reply(statsMessage, { parse_mode: 'Markdown' });
       } catch (error) {
@@ -375,108 +372,6 @@ _Use /leaderboard to see most active users_`;
         console.error(`Error in topics command for chat ${ctx.chat.id}:`, error);
         console.error('Error stack:', error.stack);
         await ctx.reply('Sorry, there was an error generating the topics list. Please try again in a few minutes. If the problem persists, contact the bot administrator.');
-      }
-    });
-
-    // Add or update the leaderboard command
-    bot.command('leaderboard', async (ctx) => {
-      try {
-        console.log(`Leaderboard command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'})`);
-        
-        // Check if database is connected
-        if (!isDBConnected()) {
-          console.error('Leaderboard command failed: Database not connected');
-          return await ctx.reply('⚠️ Database connection is unavailable. Leaderboard cannot be retrieved at this time.');
-        }
-
-        // Only allow in group chats
-        if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
-          console.log('Leaderboard command rejected: Not a group chat');
-          return await ctx.reply('This command only works in group chats.');
-        }
-        
-        const chatId = ctx.chat.id;
-        console.log(`Fetching leaderboard for chat ${chatId}`);
-        
-        try {
-          // Show typing indicator to the user
-          await ctx.telegram.sendChatAction(chatId, 'typing');
-          
-          // Get leaderboard data using model method
-          const result = await Message.getChatLeaderboard(chatId, 10);
-          
-          if (!result.leaderboard || result.leaderboard.length === 0) {
-            return await ctx.reply('No messages have been tracked in this chat yet. Send some messages first!');
-          }
-          
-          // Format user names with safety checks
-          const formatUserName = (user) => {
-            try {
-              if (user && user._id) {
-                if (user._id.username) {
-                  return `@${user._id.username}`;
-                } else {
-                  const firstName = user._id.firstName || '';
-                  const lastName = user._id.lastName || '';
-                  return `${firstName} ${lastName}`.trim() || `User ${user._id.userId || 'unknown'}`;
-                }
-              }
-              return 'Unknown User';
-            } catch (error) {
-              console.error('Error formatting user name:', error);
-              return 'Unknown User';
-            }
-          };
-          
-          // Format the leaderboard message - simplified version
-          const leaderboardMessage = `
-🏆 *Activity Leaderboard for "${ctx.chat.title}"*
-
-Total messages tracked: ${result.totalMessages}
-Active users: ${result.uniqueUsers}
-
-${result.leaderboard.map((user, index) => {
-  try {
-    // Add medals for top 3
-    let prefix = `${index + 1}.`;
-    if (index === 0) prefix = '🥇';
-    if (index === 1) prefix = '🥈';
-    if (index === 2) prefix = '🥉';
-    
-    // Calculate days since first message for messages per day
-    let messagesPerDay = 0;
-    let daysActive = 0;
-    
-    if (user.firstMessage) {
-      daysActive = Math.max(1, Math.round((Date.now() - new Date(user.firstMessage).getTime()) / (1000 * 60 * 60 * 24)));
-      messagesPerDay = Math.round((user.messageCount / daysActive) * 10) / 10;
-    }
-    
-    // Simple engagement percentage
-    const engagementPct = Math.round((user.messageCount / result.totalMessages) * 100);
-    
-    return `${prefix} ${formatUserName(user)}: ${user.messageCount} messages\n   • ${messagesPerDay}/day • ${engagementPct}% of chat`;
-  } catch (error) {
-    console.error(`Error formatting leaderboard entry for index ${index}:`, error);
-    return `${index + 1}. Error formatting user`;
-  }
-}).join('\n\n')}
-
-_Use /stats for sentiment analysis in this group_`;
-          
-          // Send the formatted message
-          console.log(`Sending leaderboard message to chat ${chatId}`);
-          await ctx.reply(leaderboardMessage, { parse_mode: 'Markdown' });
-          
-        } catch (dbError) {
-          console.error(`Database error in leaderboard command for chat ${ctx.chat.id}:`, dbError);
-          console.error('Database error stack:', dbError.stack);
-          throw new Error(`Database error: ${dbError.message}`);
-        }
-      } catch (error) {
-        console.error(`Error in leaderboard command for chat ${ctx.chat.id}:`, error);
-        console.error('Error stack:', error.stack);
-        await ctx.reply('Sorry, there was an error generating the leaderboard. Please try again in a few minutes.');
       }
     });
 
