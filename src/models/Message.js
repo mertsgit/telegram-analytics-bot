@@ -382,4 +382,45 @@ messageSchema.statics.getCryptoStats = async function(chatId) {
   }
 };
 
+// Static method to get chat leaderboard
+messageSchema.statics.getChatLeaderboard = async function(chatId, limit = 10) {
+  try {
+    console.log(`Getting leaderboard for chat ${chatId}`);
+    
+    // First check if we have any messages
+    const messageCount = await this.countDocuments({ chatId });
+    console.log(`Found ${messageCount} messages for chat ${chatId}`);
+    
+    if (messageCount === 0) {
+      return [];
+    }
+
+    // Get most active users
+    const leaderboard = await this.aggregate([
+      { $match: { chatId: chatId } },
+      {
+        $group: {
+          _id: {
+            userId: "$userId",
+            username: "$username",
+            firstName: "$firstName",
+            lastName: "$lastName"
+          },
+          messageCount: { $sum: 1 },
+          firstMessage: { $min: "$date" },
+          lastMessage: { $max: "$date" }
+        }
+      },
+      { $sort: { messageCount: -1 } },
+      { $limit: limit }
+    ]).exec();
+
+    console.log(`Leaderboard retrieved successfully for chat ${chatId}: ${leaderboard.length} users`);
+    return leaderboard;
+  } catch (error) {
+    console.error(`Error getting leaderboard for chat ${chatId}:`, error);
+    throw error;
+  }
+};
+
 module.exports = mongoose.model('Message', messageSchema); 

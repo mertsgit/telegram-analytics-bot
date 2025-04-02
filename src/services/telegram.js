@@ -3,7 +3,6 @@ const Message = require('../models/Message');
 const { analyzeMessage, isOpenAIServiceAvailable, getOpenAIErrorStatus } = require('./openai');
 const { isDBConnected } = require('../config/database');
 const axios = require('axios');
-const trenchScannerProxy = require('./trenchScannerProxy');
 require('dotenv').config();
 
 // Initialize bot with error handling
@@ -133,8 +132,7 @@ const initBot = async () => {
         { command: 'topics', description: 'Show categorized topics' },
         { command: 'leaderboard', description: 'Show top 10 most active users' },
         { command: 'health', description: 'Check bot service health' },
-        { command: 'price', description: 'Check price of a crypto coin' },
-        { command: 'bundle', description: 'Analyze token bundles on Solana' }
+        { command: 'price', description: 'Check price of a crypto coin' }
       ]);
     } catch (error) {
       console.error(`Failed to set bot commands: ${error.message}`);
@@ -167,8 +165,7 @@ const initBot = async () => {
           '/topics - Show categorized topics in this chat\n' +
           '/leaderboard - Show top 10 most active users\n' +
           '/health - Check bot service health\n' +
-          '/price <coin> - Check current price of a cryptocurrency\n' +
-          '/bundle <token_address> - Get enhanced Solana token bundle analysis'
+          '/price <coin> - Check current price of a cryptocurrency'
         );
       } catch (error) {
         console.error(`Error handling help command: ${error.message}`);
@@ -401,61 +398,77 @@ _Use /leaderboard to see most active users_`;
         const chatId = ctx.chat.id;
         console.log(`Fetching leaderboard for chat ${chatId}`);
         
-        // Get most active users
-        const leaderboard = await Message.aggregate([
-          { $match: { chatId: chatId } },
-          {
-            $group: {
-              _id: {
-                userId: "$userId",
-                username: "$username",
-                firstName: "$firstName",
-                lastName: "$lastName"
-              },
-              messageCount: { $sum: 1 },
-              firstMessage: { $min: "$date" },
-              lastMessage: { $max: "$date" }
-            }
-          },
-          { $sort: { messageCount: -1 } },
-          { $limit: 10 }
-        ]).exec();
-        
-        if (!leaderboard || leaderboard.length === 0) {
-          return await ctx.reply('No messages have been tracked in this chat yet. Send some messages first!');
-        }
-        
-        // Format user names
-        const formatUserName = (user) => {
-          if (user._id.username) {
-            return `@${user._id.username}`;
-          } else {
-            const firstName = user._id.firstName || '';
-            const lastName = user._id.lastName || '';
-            return `${firstName} ${lastName}`.trim() || `User ${user._id.userId}`;
+        try {
+          // Use the new static method to get leaderboard data
+          const leaderboard = await Message.getChatLeaderboard(chatId, 10);
+          
+          if (!leaderboard || leaderboard.length === 0) {
+            return await ctx.reply('No messages have been tracked in this chat yet. Send some messages first!');
           }
-        };
-        
-        // Create leaderboard message with medals
-        const leaderboardMessage = `
+          
+          // Format user names with safer access
+          const formatUserName = (user) => {
+            try {
+              if (user && user._id) {
+                if (user._id.username) {
+                  return `@${user._id.username}`;
+                } else {
+                  const firstName = user._id.firstName || '';
+                  const lastName = user._id.lastName || '';
+                  return `${firstName} ${lastName}`.trim() || `User ${user._id.userId || 'unknown'}`;
+                }
+              }
+              return 'Unknown User';
+            } catch (error) {
+              console.error('Error formatting user name:', error);
+              return 'Unknown User';
+            }
+          };
+          
+          // Create leaderboard message with medals
+          const leaderboardMessage = `
 🏆 *Message Leaderboard for "${ctx.chat.title}"*
 
 ${leaderboard.map((user, index) => {
-  let prefix = `${index + 1}.`;
-  if (index === 0) prefix = '🥇';
-  if (index === 1) prefix = '🥈';
-  if (index === 2) prefix = '🥉';
-  
-  const activity = Math.round((Date.now() - new Date(user.firstMessage).getTime()) / (1000 * 60 * 60 * 24));
-  const messagesPerDay = activity > 0 ? Math.round((user.messageCount / activity) * 10) / 10 : user.messageCount;
-  
-  return `${prefix} ${formatUserName(user)}: ${user.messageCount} messages${activity > 0 ? ` (${messagesPerDay}/day)` : ''}`;
+  try {
+    let prefix = `${index + 1}.`;
+    if (index === 0) prefix = '🥇';
+    if (index === 1) prefix = '🥈';
+    if (index === 2) prefix = '🥉';
+    
+    // Calculate messages per day
+    let activity = 0;
+    let messagesPerDayText = '';
+    
+    try {
+      if (user.firstMessage) {
+        activity = Math.round((Date.now() - new Date(user.firstMessage).getTime()) / (1000 * 60 * 60 * 24));
+        if (activity > 0) {
+          const messagesPerDay = Math.round((user.messageCount / activity) * 10) / 10;
+          messagesPerDayText = ` (${messagesPerDay}/day)`;
+        }
+      }
+    } catch (e) {
+      console.error('Error calculating messages per day:', e);
+    }
+    
+    return `${prefix} ${formatUserName(user)}: ${user.messageCount} messages${messagesPerDayText}`;
+  } catch (error) {
+    console.error(`Error formatting leaderboard entry for index ${index}:`, error);
+    return `${index + 1}. Error formatting user`;
+  }
 }).join('\n')}
 
 _Tracking messages since bot was added to the group_
 _Use /stats for group sentiment analysis_`;
-        
-        await ctx.reply(leaderboardMessage, { parse_mode: 'Markdown' });
+          
+          console.log(`Sending leaderboard message to chat ${chatId}`);
+          await ctx.reply(leaderboardMessage, { parse_mode: 'Markdown' });
+          
+        } catch (dbError) {
+          console.error(`Database error in leaderboard command for chat ${ctx.chat.id}:`, dbError);
+          throw new Error(`Database error: ${dbError.message}`);
+        }
       } catch (error) {
         console.error(`Error in leaderboard command for chat ${ctx.chat.id}:`, error);
         console.error('Error stack:', error.stack);
@@ -526,70 +539,6 @@ _Data from CoinGecko_
         }
       } catch (error) {
         console.error(`Error handling price command: ${error.message}`);
-        await ctx.reply('Sorry, there was an error processing your request. Please try again later.');
-      }
-    });
-
-    // Add bundle command to analyze Solana tokens via TrenchScannerBot
-    bot.command('bundle', async (ctx) => {
-      try {
-        const args = ctx.message.text.split(' ');
-        let tokenAddress = '';
-        
-        if (args.length > 1) {
-          tokenAddress = args[1].trim();
-        } else {
-          return await ctx.reply('Please specify a Solana token address. Example: /bundle TokenAddressHere');
-        }
-        
-        console.log(`Bundle command received for ${tokenAddress} in chat ${ctx.chat.id}`);
-        
-        // Check if we're using real TrenchScannerBot proxy or fallback mode
-        const trenchProxyAvailable = process.env.TELEGRAM_API_ID && process.env.TELEGRAM_API_HASH;
-        
-        if (trenchProxyAvailable) {
-          // Send loading message
-          const loadingMsg = await ctx.reply('🔍 Analyzing token bundles... This may take a few seconds.');
-          
-          try {
-            // Get bundle analysis through the proxy
-            const analysisResult = await trenchScannerProxy.getBundleAnalysis(tokenAddress);
-            
-            if (analysisResult.success) {
-              // Send enhanced analysis
-              await ctx.reply(analysisResult.enhancedAnalysis, { parse_mode: 'Markdown' });
-            } else {
-              // Send error message
-              await ctx.reply(`❌ ${analysisResult.message || 'Failed to get bundle analysis.'}`);
-            }
-            
-            // Delete loading message
-            try {
-              await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
-            } catch (deleteError) {
-              console.error('Failed to delete loading message:', deleteError.message);
-            }
-          } catch (analyzeError) {
-            console.error(`Error analyzing bundle: ${analyzeError.message}`);
-            await ctx.reply('Sorry, there was an error analyzing this token. The service might be temporarily unavailable.');
-            
-            // Try to delete loading message
-            try {
-              await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
-            } catch (deleteError) {
-              // Ignore this error
-            }
-          }
-        } else {
-          // Fallback mode - provide instructions to use TrenchScannerBot directly
-          await ctx.reply(
-            `To analyze token bundles, please use @TrenchScannerBot directly with the command:\n\n` +
-            `/bundle ${tokenAddress}\n\n` +
-            `The TrenchScannerBot proxy feature requires additional configuration. Please contact the bot administrator for assistance.`
-          );
-        }
-      } catch (error) {
-        console.error(`Error handling bundle command: ${error.message}`);
         await ctx.reply('Sorry, there was an error processing your request. Please try again later.');
       }
     });
@@ -686,18 +635,6 @@ _Data from CoinGecko_
         console.error(`Could not send error reply: ${replyError.message}`);
       }
     });
-
-    // Initialize TrenchScannerProxy if credentials are available
-    if (process.env.TELEGRAM_API_ID && process.env.TELEGRAM_API_HASH) {
-      try {
-        await trenchScannerProxy.initialize();
-      } catch (error) {
-        console.error(`Failed to initialize TrenchScannerProxy: ${error.message}`);
-        // Continue anyway - the bot will use fallback mode for bundle command
-      }
-    } else {
-      console.log('TrenchScannerProxy not configured. Bundle command will use fallback mode.');
-    }
 
     // Launch the bot with retry mechanism
     const botLaunched = await launchBotWithRetry();
