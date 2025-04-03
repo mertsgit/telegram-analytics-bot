@@ -5,6 +5,10 @@ const { isDBConnected } = require('../config/database');
 const axios = require('axios');
 require('dotenv').config();
 
+// Add authorized groups configuration
+const AUTHORIZED_GROUPS = process.env.AUTHORIZED_GROUPS ? process.env.AUTHORIZED_GROUPS.split(',').map(id => Number(id.trim())) : [];
+const BOT_OWNER_ID = process.env.BOT_OWNER_ID ? Number(process.env.BOT_OWNER_ID) : null;
+
 // Initialize bot with error handling
 let bot;
 let botInitialized = false;
@@ -12,6 +16,35 @@ let botInfo = null;
 let initializationError = null;
 let launchRetryCount = 0;
 const MAX_LAUNCH_RETRIES = 5;
+
+// Helper function to check if a group is authorized
+const isGroupAuthorized = (chatId) => {
+  return AUTHORIZED_GROUPS.includes(chatId);
+};
+
+// Helper function to check if user is bot owner
+const isBotOwner = (userId) => {
+  return BOT_OWNER_ID === userId;
+};
+
+// Helper function to add a group to authorized list
+const addAuthorizedGroup = async (groupId) => {
+  if (!AUTHORIZED_GROUPS.includes(groupId)) {
+    AUTHORIZED_GROUPS.push(groupId);
+    // Note: In a production environment, you'd want to persist this to a database
+    console.log(`Added group ${groupId} to authorized list`);
+  }
+};
+
+// Helper function to remove a group from authorized list
+const removeAuthorizedGroup = async (groupId) => {
+  const index = AUTHORIZED_GROUPS.indexOf(groupId);
+  if (index > -1) {
+    AUTHORIZED_GROUPS.splice(index, 1);
+    // Note: In a production environment, you'd want to persist this to a database
+    console.log(`Removed group ${groupId} from authorized list`);
+  }
+};
 
 try {
   if (!process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN.trim() === '') {
@@ -132,7 +165,10 @@ const initBot = async () => {
         { command: 'topics', description: 'Show categorized topics' },
         { command: 'leaderboard', description: 'Show top users by quality score' },
         { command: 'health', description: 'Check bot service health' },
-        { command: 'price', description: 'Check price of a crypto coin' }
+        { command: 'price', description: 'Check price of a crypto coin' },
+        { command: 'authorize', description: 'Authorize a group' },
+        { command: 'revoke', description: 'Revoke group authorization' },
+        { command: 'listgroups', description: 'List authorized groups' }
       ]);
     } catch (error) {
       console.error(`Failed to set bot commands: ${error.message}`);
@@ -593,6 +629,12 @@ ${leaderboardEntries}
           return;
         }
         
+        // Check if group is authorized
+        if (!isGroupAuthorized(ctx.chat.id)) {
+          console.log(`Ignoring message from unauthorized group: ${ctx.chat.title} (${ctx.chat.id})`);
+          return;
+        }
+        
         // Skip if database is not connected
         if (!isDBConnected()) {
           console.log(`Skipping message processing: Database not connected (Chat: ${ctx.chat.title})`);
@@ -715,8 +757,16 @@ ${leaderboardEntries}
         const botWasAdded = newMembers.some(member => member.id === botInfo.id);
         
         if (botWasAdded) {
+          if (!isGroupAuthorized(ctx.chat.id)) {
+            await ctx.reply(`⚠️ This group (${ctx.chat.title}) is not authorized to use this bot. Please contact the bot owner for access.`);
+            // Leave the unauthorized group
+            await ctx.leaveChat();
+            console.log(`Bot left unauthorized group: ${ctx.chat.title} (${ctx.chat.id})`);
+            return;
+          }
+          
           await ctx.reply(`Hello! I've been added to "${ctx.chat.title}". I'll start tracking and analyzing messages in this group.`);
-          console.log(`Bot was added to a new group: ${ctx.chat.title} (${ctx.chat.id})`);
+          console.log(`Bot was added to authorized group: ${ctx.chat.title} (${ctx.chat.id})`);
         }
       } catch (error) {
         console.error(`Error handling new chat members: ${error.message}`);
@@ -748,6 +798,74 @@ ${leaderboardEntries}
         }
       } catch (replyError) {
         console.error(`Could not send error reply: ${replyError.message}`);
+      }
+    });
+
+    // Add owner commands for managing authorized groups
+    bot.command('authorize', async (ctx) => {
+      try {
+        // Only bot owner can use this command
+        if (!isBotOwner(ctx.from.id)) {
+          await ctx.reply('⚠️ Only the bot owner can use this command.');
+          return;
+        }
+
+        const args = ctx.message.text.split(' ');
+        if (args.length !== 2) {
+          await ctx.reply('Usage: /authorize <group_id>');
+          return;
+        }
+
+        const groupId = Number(args[1]);
+        await addAuthorizedGroup(groupId);
+        await ctx.reply(`✅ Group ${groupId} has been authorized.`);
+      } catch (error) {
+        console.error(`Error in authorize command: ${error.message}`);
+        await ctx.reply('Sorry, there was an error processing your request.');
+      }
+    });
+
+    bot.command('revoke', async (ctx) => {
+      try {
+        // Only bot owner can use this command
+        if (!isBotOwner(ctx.from.id)) {
+          await ctx.reply('⚠️ Only the bot owner can use this command.');
+          return;
+        }
+
+        const args = ctx.message.text.split(' ');
+        if (args.length !== 2) {
+          await ctx.reply('Usage: /revoke <group_id>');
+          return;
+        }
+
+        const groupId = Number(args[1]);
+        await removeAuthorizedGroup(groupId);
+        await ctx.reply(`✅ Group ${groupId} has been removed from authorized list.`);
+      } catch (error) {
+        console.error(`Error in revoke command: ${error.message}`);
+        await ctx.reply('Sorry, there was an error processing your request.');
+      }
+    });
+
+    bot.command('listgroups', async (ctx) => {
+      try {
+        // Only bot owner can use this command
+        if (!isBotOwner(ctx.from.id)) {
+          await ctx.reply('⚠️ Only the bot owner can use this command.');
+          return;
+        }
+
+        if (AUTHORIZED_GROUPS.length === 0) {
+          await ctx.reply('No groups are currently authorized.');
+          return;
+        }
+
+        const groupsList = AUTHORIZED_GROUPS.map(id => `- ${id}`).join('\n');
+        await ctx.reply(`Authorized Groups:\n${groupsList}`);
+      } catch (error) {
+        console.error(`Error in listgroups command: ${error.message}`);
+        await ctx.reply('Sorry, there was an error processing your request.');
       }
     });
 
