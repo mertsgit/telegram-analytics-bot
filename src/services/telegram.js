@@ -588,8 +588,12 @@ ${leaderboardEntries}
     // Handle messages
     bot.on('message', async (ctx) => {
       try {
+        // Debug logging for received message
+        console.log(`📨 Message received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private'}), from=${ctx.from?.id}`);
+        
         // Skip if not in a group chat
         if (!ctx.chat || (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup')) {
+          console.log(`Skipping message: Not in a group chat (type: ${ctx.chat?.type || 'undefined'})`);
           return;
         }
         
