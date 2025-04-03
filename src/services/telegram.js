@@ -16,6 +16,19 @@ let botInfo = null;
 let initializationError = null;
 let launchRetryCount = 0;
 const MAX_LAUNCH_RETRIES = 5;
+const RETRY_DELAY = 5000; // 5 seconds delay between retries
+
+// Helper function to format error messages
+const formatErrorMessage = (error) => {
+  if (error.message.includes('409: Conflict')) {
+    return 'Another instance of the bot is already running. Please stop other instances before starting a new one.';
+  } else if (error.message.includes('401: Unauthorized')) {
+    return 'Invalid bot token. Please check your TELEGRAM_BOT_TOKEN in the environment variables.';
+  } else if (error.message.includes('403: Forbidden')) {
+    return 'Bot access is forbidden. Please make sure you have the correct permissions.';
+  }
+  return error.message;
+};
 
 // Helper function to check if a group is authorized
 const isGroupAuthorized = (chatId) => {
@@ -46,21 +59,77 @@ const removeAuthorizedGroup = async (groupId) => {
   }
 };
 
-try {
-  if (!process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN.trim() === '') {
-    initializationError = 'Telegram Bot Token is missing or empty. Bot cannot start.';
-    console.error(initializationError);
-  } else if (process.env.TELEGRAM_BOT_TOKEN === 'your_telegram_bot_token') {
-    initializationError = 'You are using the default Telegram Bot Token. Please update it with your actual token.';
-    console.error(initializationError);
-  } else {
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Launch bot with improved error handling and retry mechanism
+const launchBot = async () => {
+  try {
+    if (!process.env.TELEGRAM_BOT_TOKEN) {
+      throw new Error('TELEGRAM_BOT_TOKEN is not set in environment variables');
+    }
+
     bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-    console.log('Telegram bot initialized');
+    botInfo = await bot.telegram.getMe();
+    console.log(`Bot initialized as @${botInfo.username}`);
+
+    // Set up commands
+    await bot.telegram.setMyCommands([
+      { command: 'start', description: 'Start the bot' },
+      { command: 'help', description: 'Show help message' },
+      { command: 'stats', description: 'Show group statistics' },
+      { command: 'health', description: 'Check bot health status' },
+      { command: 'authorize', description: 'Authorize a group (owner only)' },
+      { command: 'revoke', description: 'Revoke group authorization (owner only)' },
+      { command: 'listgroups', description: 'List authorized groups (owner only)' }
+    ]);
+
+    // Add error handling middleware
+    bot.catch((err, ctx) => {
+      console.error('Bot error:', err);
+      const errorMessage = formatErrorMessage(err);
+      ctx.reply(`⚠️ Error: ${errorMessage}`).catch(console.error);
+    });
+
+    // Handle unauthorized groups
+    bot.on(['message', 'edited_message'], async (ctx, next) => {
+      if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
+        if (!isGroupAuthorized(ctx.chat.id)) {
+          await ctx.reply('⚠️ This group is not authorized to use this bot. Please contact the bot owner for access.');
+          return;
+        }
+      }
+      return next();
+    });
+
+    // Start the bot
+    while (launchRetryCount < MAX_LAUNCH_RETRIES) {
+      try {
+        console.log(`Attempting to launch bot (attempt ${launchRetryCount + 1}/${MAX_LAUNCH_RETRIES})`);
+        await bot.launch();
+        console.log('Bot successfully started!');
+        botInitialized = true;
+        return true;
+      } catch (error) {
+        launchRetryCount++;
+        console.error(`Failed to launch bot: ${formatErrorMessage(error)}`);
+        
+        if (error.message.includes('409: Conflict')) {
+          console.log('Waiting for other bot instance to release...');
+          await sleep(RETRY_DELAY);
+          continue;
+        }
+        
+        throw error;
+      }
+    }
+    
+    throw new Error(`Failed to start bot after ${MAX_LAUNCH_RETRIES} attempts`);
+  } catch (error) {
+    initializationError = error;
+    console.error('Bot initialization failed:', formatErrorMessage(error));
+    return false;
   }
-} catch (error) {
-  initializationError = `Error initializing Telegram bot: ${error.message}`;
-  console.error(initializationError);
-}
+};
 
 // Check service status
 const getServiceStatus = () => {
@@ -86,56 +155,6 @@ ${status.launchRetryCount > 0 ? `- Launch retries: ${status.launchRetryCount}/${
 ${status.openAIError ? `- OpenAI Error: ${status.openAIError}` : ''}
 ${status.initializationError ? `- Error: ${status.initializationError}` : ''}
   `;
-};
-
-// Helper function to launch the bot with retries
-const launchBotWithRetry = async (retryDelay = 5000) => {
-  try {
-    console.log(`Attempting to launch bot (attempt ${launchRetryCount + 1}/${MAX_LAUNCH_RETRIES})`);
-    
-    // Set polling parameters to handle conflicts better
-    // Using a unique polling identifier helps prevent conflicts
-    const uniqueId = `instance_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
-    
-    await bot.launch({
-      allowedUpdates: ['message', 'callback_query', 'inline_query', 'chat_member', 'new_chat_members'],
-      polling: {
-        timeout: 30,
-        limit: 100,
-        allowed_updates: ['message', 'callback_query', 'inline_query', 'chat_member', 'new_chat_members'],
-      }
-    });
-    
-    botInitialized = true;
-    launchRetryCount = 0; // Reset counter on success
-    console.log('Bot successfully launched');
-    return true;
-  } catch (error) {
-    console.error(`Failed to launch bot: ${error.message}`);
-    
-    // Handle 409 conflict error specifically
-    if (error.message.includes('409: Conflict') || error.message.includes('terminated by other getUpdates request')) {
-      console.log('Detected conflict with another bot instance. Waiting for other instance to time out...');
-      launchRetryCount++;
-      
-      if (launchRetryCount < MAX_LAUNCH_RETRIES) {
-        console.log(`Will retry in ${retryDelay/1000} seconds (attempt ${launchRetryCount + 1}/${MAX_LAUNCH_RETRIES})`);
-        
-        // Exponential backoff
-        const nextRetryDelay = retryDelay * 2;
-        
-        // Wait and retry
-        await new Promise(resolve => setTimeout(resolve, retryDelay));
-        return await launchBotWithRetry(nextRetryDelay);
-      } else {
-        console.error(`Max retry attempts (${MAX_LAUNCH_RETRIES}) reached. Bot failed to start.`);
-        initializationError = `Max retry attempts reached. Conflict with another bot instance.`;
-        return false;
-      }
-    }
-    
-    return false;
-  }
 };
 
 // Initialize bot with commands and message handlers
@@ -870,7 +889,7 @@ ${leaderboardEntries}
     });
 
     // Launch the bot with retry mechanism
-    const botLaunched = await launchBotWithRetry();
+    const botLaunched = await launchBot();
     if (!botLaunched) {
       return false;
     }
@@ -892,4 +911,13 @@ ${leaderboardEntries}
   }
 };
 
-module.exports = { initBot, getServiceStatus }; 
+// Export the bot instance and launch function
+module.exports = {
+  launchBot,
+  getBot: () => bot,
+  getBotInfo: () => botInfo,
+  isInitialized: () => botInitialized,
+  getInitializationError: () => initializationError,
+  initBot,
+  getServiceStatus
+}; 
