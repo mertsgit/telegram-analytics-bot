@@ -5,6 +5,15 @@ const { isDBConnected } = require('../config/database');
 const axios = require('axios');
 require('dotenv').config();
 
+// --- Authorization Configuration ---
+const ALLOWED_GROUP_IDS = [
+  -2484836322, // Replace with actual negative group ID if needed
+  -2521462418, // Replace with actual negative group ID if needed
+  -2648239653  // Replace with actual negative group ID if needed
+];
+const OWNER_ID = 5348052974;
+// --- End Authorization Configuration ---
+
 // Initialize bot with error handling
 let bot;
 let botInitialized = false;
@@ -105,6 +114,11 @@ const launchBotWithRetry = async (retryDelay = 5000) => {
   }
 };
 
+// Check if the chat ID is in the allowed list
+const isAllowedGroup = (chatId) => {
+  return ALLOWED_GROUP_IDS.includes(chatId);
+};
+
 // Initialize bot with commands and message handlers
 const initBot = async () => {
   try {
@@ -143,8 +157,8 @@ const initBot = async () => {
     bot.command('start', async (ctx) => {
       try {
         if (ctx.chat.type === 'private') {
-          await ctx.reply('Hello! I track and analyze messages in groups. Add me to a group to start working!');
-        } else {
+          await ctx.reply('Hello! I track and analyze messages in authorized groups. Use /help to see commands.');
+        } else if (isAllowedGroup(ctx.chat.id)) {
           const privacyMessage = `
 Hello! I'm now tracking and analyzing messages in this group (${ctx.chat.title}).
 
@@ -158,7 +172,11 @@ Hello! I'm now tracking and analyzing messages in this group (${ctx.chat.title})
 Use /help to see available commands.`;
           
           await ctx.reply(privacyMessage, { parse_mode: 'HTML' });
-          console.log(`Bot initialized in group: ${ctx.chat.title} (${ctx.chat.id})`);
+          console.log(`Bot initialized in allowed group: ${ctx.chat.title} (${ctx.chat.id})`);
+        } else {
+            // If started in an unauthorized group (shouldn't happen if new_chat_members works)
+            await ctx.reply('Sorry, this bot is restricted to specific groups.');
+            await ctx.leaveChat();
         }
       } catch (error) {
         console.error(`Error handling start command: ${error.message}`);
@@ -185,9 +203,12 @@ Use /help to see available commands.`;
       }
     });
 
-    // Handle health command (renamed from status)
+    // Handle health command (Allowed in groups or by owner)
     bot.command('health', async (ctx) => {
       try {
+        if (!isAllowedGroup(ctx.chat.id) && ctx.from.id !== OWNER_ID) {
+            return await ctx.reply('Sorry, this command is restricted.');
+        }
         await ctx.reply(formatServiceStatusMessage(), { parse_mode: 'Markdown' });
       } catch (error) {
         console.error(`Error handling health command: ${error.message}`);
@@ -195,11 +216,18 @@ Use /help to see available commands.`;
       }
     });
 
-    // Handle stats command
+    // Handle stats command (Allowed groups only)
     bot.command('stats', async (ctx) => {
       try {
         console.log(`Stats command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'})`);
         
+        // --- Authorization Check ---
+        if (!isAllowedGroup(ctx.chat.id)) {
+          console.log(`Stats command rejected: Unauthorized group ${ctx.chat.id}`);
+          return await ctx.reply('This command can only be used in authorized groups.');
+        }
+        // --- End Authorization Check ---
+
         // Check if database is connected
         if (!isDBConnected()) {
           console.error('Stats command failed: Database not connected');
@@ -291,11 +319,18 @@ _Use /topics for detailed topic analysis_`;
       }
     });
     
-    // Handle topics command
+    // Handle topics command (Allowed groups only)
     bot.command('topics', async (ctx) => {
       try {
         console.log(`Topics command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'})`);
         
+        // --- Authorization Check ---
+        if (!isAllowedGroup(ctx.chat.id)) {
+          console.log(`Topics command rejected: Unauthorized group ${ctx.chat.id}`);
+          return await ctx.reply('This command can only be used in authorized groups.');
+        }
+        // --- End Authorization Check ---
+
         // Check if database is connected
         if (!isDBConnected()) {
           console.error('Topics command failed: Database not connected');
@@ -380,9 +415,16 @@ _Use /topics for detailed topic analysis_`;
       }
     });
 
-    // Add price command to check cryptocurrency prices
+    // Add price command (Allowed groups only)
     bot.command('price', async (ctx) => {
       try {
+        // --- Authorization Check ---
+        if (!isAllowedGroup(ctx.chat.id)) {
+          console.log(`Price command rejected: Unauthorized group ${ctx.chat.id}`);
+          return await ctx.reply('This command can only be used in authorized groups.');
+        }
+        // --- End Authorization Check ---
+
         const args = ctx.message.text.split(' ');
         let symbol = '';
         
@@ -447,11 +489,18 @@ _Data from CoinGecko_
       }
     });
 
-    // Add leaderboard command
+    // Add leaderboard command (Allowed groups only)
     bot.command('leaderboard', async (ctx) => {
       try {
         console.log(`Leaderboard command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'})`);
         
+        // --- Authorization Check ---
+        if (!isAllowedGroup(ctx.chat.id)) {
+          console.log(`Leaderboard command rejected: Unauthorized group ${ctx.chat.id}`);
+          return await ctx.reply('This command can only be used in authorized groups.');
+        }
+        // --- End Authorization Check ---
+
         // Check if database is connected
         if (!isDBConnected()) {
           console.error('Leaderboard command failed: Database not connected');
@@ -588,13 +637,17 @@ ${leaderboardEntries}
       }
     });
 
-    // Handle messages
+    // Handle messages (Only process messages from allowed groups)
     bot.on('message', async (ctx) => {
       try {
-        // Skip if not in a group chat
-        if (!ctx.chat || (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup')) {
+        // --- Authorization Check ---
+        // Skip if not in an allowed group chat
+        if (!ctx.chat || !isAllowedGroup(ctx.chat.id)) {
+          // Don't log ignored messages from unauthorized groups to reduce noise
+          // console.log(`Ignoring message from unauthorized chat: ${ctx.chat?.id} (${ctx.chat?.type})`);
           return;
         }
+        // --- End Authorization Check ---
         
         // Skip if database is not connected
         if (!isDBConnected()) {
@@ -718,8 +771,16 @@ ${leaderboardEntries}
         const botWasAdded = newMembers.some(member => member.id === botInfo.id);
         
         if (botWasAdded) {
-          await ctx.reply(`Hello! I've been added to "${ctx.chat.title}". I'll start tracking and analyzing messages in this group.`);
-          console.log(`Bot was added to a new group: ${ctx.chat.title} (${ctx.chat.id})`);
+          // --- Authorization Check ---
+          if (isAllowedGroup(ctx.chat.id)) {
+            await ctx.reply(`Hello! I've been added to "${ctx.chat.title}". I'll start tracking and analyzing messages in this group.`);
+            console.log(`Bot was added to an ALLOWED group: ${ctx.chat.title} (${ctx.chat.id})`);
+          } else {
+            console.log(`Bot was added to an UNAUTHORIZED group: ${ctx.chat.title} (${ctx.chat.id}). Leaving.`);
+            await ctx.reply('Sorry, this bot is restricted to specific authorized groups and cannot operate here.');
+            await ctx.leaveChat();
+          }
+          // --- End Authorization Check ---
         }
       } catch (error) {
         console.error(`Error handling new chat members: ${error.message}`);
