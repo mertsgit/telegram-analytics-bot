@@ -189,7 +189,15 @@ messageSchema.statics.getChatTopics = async function(chatId) {
   try {
     console.log(`Getting topics for chat ${chatId}`);
     
-    // First check if we have any messages with topics
+    // First check if we have any messages
+    const messageCount = await this.countDocuments({ chatId });
+    console.log(`Found ${messageCount} total messages for chat ${chatId}`);
+    
+    if (messageCount === 0) {
+      return [];
+    }
+    
+    // Check for messages with topics specifically
     const messagesWithTopics = await this.countDocuments({
       chatId,
       'analysis.topics': { $exists: true, $ne: [] }
@@ -201,30 +209,81 @@ messageSchema.statics.getChatTopics = async function(chatId) {
       return [];
     }
 
-    const topics = await this.aggregate([
-      {
-        $match: {
-          chatId: chatId,
-          'analysis.topics': { $exists: true, $ne: [] }
-        }
-      },
-      { $unwind: "$analysis.topics" },
-      {
-        $group: {
-          _id: "$analysis.topics",
-          count: { $sum: 1 },
-          lastMentioned: { $max: "$date" }
-        }
-      },
-      { $sort: { count: -1 } },
-      { $limit: 15 }
-    ]).exec();
+    // Extract and count topic occurrences with safer approach
+    try {
+      const topics = await this.aggregate([
+        {
+          $match: {
+            chatId: chatId,
+            'analysis.topics': { $exists: true, $ne: [] }
+          }
+        },
+        { $unwind: { path: "$analysis.topics", preserveNullAndEmptyArrays: false } },
+        {
+          $group: {
+            _id: "$analysis.topics",
+            count: { $sum: 1 },
+            lastMentioned: { $max: "$date" }
+          }
+        },
+        // Filter out empty topics or those with special characters only
+        {
+          $match: {
+            _id: { $regex: /[a-zA-Z0-9]/, $ne: "" }
+          }
+        },
+        { $sort: { count: -1 } },
+        { $limit: 15 }
+      ]).exec();
 
-    console.log(`Topics retrieved successfully for chat ${chatId}:`, JSON.stringify(topics, null, 2));
-    return topics;
+      console.log(`Topics retrieved successfully for chat ${chatId}: ${topics.length} topics found`);
+      return topics;
+    } catch (aggregationError) {
+      console.error(`Error during topic aggregation for chat ${chatId}:`, aggregationError);
+      
+      // Fallback to simpler approach if the aggregation fails
+      console.log(`Using fallback topic extraction for chat ${chatId}`);
+      const messages = await this.find(
+        { chatId, 'analysis.topics': { $exists: true, $ne: [] } },
+        { 'analysis.topics': 1, date: 1 }
+      ).limit(100).sort({ date: -1 }).lean();
+      
+      // Manual topic counting
+      const topicCounts = {};
+      const lastMentioned = {};
+      
+      messages.forEach(msg => {
+        if (Array.isArray(msg.analysis.topics)) {
+          msg.analysis.topics.forEach(topic => {
+            if (topic && /[a-zA-Z0-9]/.test(topic)) {
+              topicCounts[topic] = (topicCounts[topic] || 0) + 1;
+              
+              // Track most recent mention
+              if (!lastMentioned[topic] || msg.date > lastMentioned[topic]) {
+                lastMentioned[topic] = msg.date;
+              }
+            }
+          });
+        }
+      });
+      
+      // Convert to expected format
+      const formattedTopics = Object.entries(topicCounts)
+        .map(([topic, count]) => ({
+          _id: topic,
+          count,
+          lastMentioned: lastMentioned[topic]
+        }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 15);
+      
+      console.log(`Fallback topic extraction successful: ${formattedTopics.length} topics found`);
+      return formattedTopics;
+    }
   } catch (error) {
     console.error(`Error getting topics for chat ${chatId}:`, error);
-    throw error;
+    console.error('Stack trace:', error.stack);
+    return []; // Return empty array instead of throwing error for more resilience
   }
 };
 

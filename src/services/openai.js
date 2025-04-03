@@ -61,21 +61,44 @@ const analyzeMessage = async (text) => {
       return { sentiment: 'neutral', topics: [], intent: 'unknown' };
     }
 
-    // Enhanced prompt for crypto content
+    // Check for obvious profanity with simple regex before sending to API
+    const profanityRegex = /\b(f+\s*[ou]+\s*c*\s*k+|s+\s*h+\s*[il1]+\s*t+|b+\s*[il1]+\s*t+\s*c+\s*h+|d+\s*[il1]+\s*c+\s*k+|a+\s*s+\s*s+\s*h+\s*[o0]+\s*l+\s*e+|f+\s*off?|f+\s*u+|cunt|cock)\b/i;
+    if (profanityRegex.test(text)) {
+      console.log('Profanity detected in message, marking as negative sentiment');
+      return {
+        sentiment: 'negative',
+        topics: ['profanity'],
+        intent: 'statement',
+        cryptoSentiment: 'neutral',
+        mentionedCoins: [],
+        scamIndicators: [],
+        priceTargets: {}
+      };
+    }
+
+    // Enhanced prompt for crypto content with better sentiment detection
     const response = await openai.chat.completions.create({
       model: process.env.OPENAI_MODEL || "gpt-3.5-turbo",
       messages: [
         {
           role: "system",
-          content: `You are an AI specialized in cryptocurrency and trading analysis. 
+          content: `You are an AI specialized in cryptocurrency and trading analysis with strong focus on emotion detection. 
+          
           Analyze the following message and extract:
-          1. Overall sentiment (positive, negative, neutral)
+          1. Overall sentiment (positive, negative, neutral) - be sensitive to profanity, insults, and aggression
           2. Crypto sentiment (bullish, bearish, neutral)
           3. Specific cryptocurrency topics mentioned
           4. User intent (question, statement, recommendation, etc.)
           5. Identify any mentioned tokens/coins
           6. Detect potential scam indicators (excessive hype, unrealistic promises, urgency, etc.)
           7. Extract any price predictions or targets mentioned
+          
+          IMPORTANT SENTIMENT GUIDELINES:
+          - Messages containing insults, profanity, or aggression should ALWAYS be classified as "negative"
+          - Messages with words like "f*ck", "sh*t", "damn", or similar profanity are negative
+          - Telling someone to "f off" or similar is strongly negative
+          - Dismissive or rude responses should be marked negative
+          - Only mark as neutral if truly neutral with no emotional charge
           
           Format your response as a JSON object with these fields.`
         },
@@ -116,6 +139,19 @@ const analyzeMessage = async (text) => {
         scamIndicators,
         priceTargets
       };
+    }
+    
+    // Double-check sentiment for common profanity that might be missed
+    if (
+      text.toLowerCase().includes('fuck') || 
+      text.toLowerCase().includes('shit') || 
+      text.toLowerCase().includes('f off') ||
+      text.toLowerCase().includes('f you') ||
+      text.toLowerCase().includes('stfu') ||
+      text.toLowerCase().includes('gtfo')
+    ) {
+      parsedResponse.sentiment = 'negative';
+      console.log('Profanity detected in post-processing, overriding to negative sentiment');
     }
     
     // Ensure all expected fields exist

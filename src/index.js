@@ -95,16 +95,10 @@ const startApp = async () => {
       console.error('Failed environment variable check. Starting with limited functionality.');
     }
     
-    console.log('Connecting to MongoDB...');
     // Connect to MongoDB
-    try {
-      const dbConnected = await connectDB();
-      
-      if (!dbConnected) {
-        console.warn('Starting bot with limited functionality (no database connection).');
-      }
-    } catch (dbError) {
-      console.error(`Database connection error: ${dbError.message}`);
+    const dbConnected = await connectDB();
+    
+    if (!dbConnected) {
       console.warn('Starting bot with limited functionality (no database connection).');
     }
     
@@ -114,10 +108,6 @@ const startApp = async () => {
     if (botInitialized) {
       console.log('Telegram bot has been successfully initialized and started.');
       console.log('The bot is now tracking messages in groups it is added to.');
-      console.log('\n⚠️ IMPORTANT: If the bot is not receiving messages in groups, please:');
-      console.log('1. Disable Privacy Mode: Message @BotFather, go to /mybots → Your Bot → Bot Settings → Group Privacy → Disable');
-      console.log('2. Make sure the bot has permission to read messages in the group');
-      console.log('3. In some cases, you might need to make the bot an admin in the group\n');
     } else {
       console.error('Failed to initialize Telegram bot. Check logs for details.');
     }
@@ -144,7 +134,7 @@ const startApp = async () => {
     process.on('SIGTERM', gracefulShutdown);
     
   } catch (error) {
-    console.error(`❌ Fatal error: ${error}`);
+    console.error(`Error starting application: ${error.message}`);
     console.error('Stack trace:', error.stack);
   }
 };
