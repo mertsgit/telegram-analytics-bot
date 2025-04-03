@@ -145,7 +145,19 @@ const initBot = async () => {
         if (ctx.chat.type === 'private') {
           await ctx.reply('Hello! I track and analyze messages in groups. Add me to a group to start working!');
         } else {
-          await ctx.reply(`Hello! I'm now tracking and analyzing messages in this group (${ctx.chat.title}).`);
+          const privacyMessage = `
+Hello! I'm now tracking and analyzing messages in this group (${ctx.chat.title}).
+
+<b>Privacy Notice:</b>
+• This bot tracks and analyzes messages in this group
+• Messages are stored in a database for analysis
+• We analyze message content, sentiment and topics
+• All data is used only for generating group stats
+• No personal data is shared with third parties
+
+Use /help to see available commands.`;
+          
+          await ctx.reply(privacyMessage, { parse_mode: 'HTML' });
           console.log(`Bot initialized in group: ${ctx.chat.title} (${ctx.chat.id})`);
         }
       } catch (error) {
@@ -588,12 +600,8 @@ ${leaderboardEntries}
     // Handle messages
     bot.on('message', async (ctx) => {
       try {
-        // Debug logging for received message
-        console.log(`📨 Message received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private'}), from=${ctx.from?.id}`);
-        
         // Skip if not in a group chat
         if (!ctx.chat || (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup')) {
-          console.log(`Skipping message: Not in a group chat (type: ${ctx.chat?.type || 'undefined'})`);
           return;
         }
         
