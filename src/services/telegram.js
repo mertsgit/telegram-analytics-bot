@@ -9,7 +9,7 @@ require('dotenv').config();
 const ALLOWED_GROUP_IDS = [
   -2484836322, // Replace with actual negative group ID if needed
   -2521462418, // Replace with actual negative group ID if needed
-   2648239653  // Replace with actual negative group ID if needed
+  -2648239653  // Replace with actual negative group ID if needed
 ];
 const OWNER_ID = 5348052974;
 // --- End Authorization Configuration ---
@@ -116,7 +116,20 @@ const launchBotWithRetry = async (retryDelay = 5000) => {
 
 // Check if the chat ID is in the allowed list
 const isAllowedGroup = (chatId) => {
-  return ALLOWED_GROUP_IDS.includes(chatId);
+  // Convert chatId to number if it's a string
+  const numericChatId = typeof chatId === 'string' ? parseInt(chatId, 10) : chatId;
+  
+  // Check each allowed ID (both as is and as string comparison for safety)
+  for (const allowedId of ALLOWED_GROUP_IDS) {
+    if (allowedId === numericChatId || allowedId === chatId || 
+        allowedId.toString() === chatId.toString()) {
+      console.log(`Group ${chatId} is authorized (matched with ${allowedId})`);
+      return true;
+    }
+  }
+  
+  console.log(`Group ${chatId} is NOT authorized. Allowed IDs: ${ALLOWED_GROUP_IDS.join(', ')}`);
+  return false;
 };
 
 // Initialize bot with commands and message handlers
@@ -158,8 +171,13 @@ const initBot = async () => {
       try {
         if (ctx.chat.type === 'private') {
           await ctx.reply('Hello! I track and analyze messages in authorized groups. Use /help to see commands.');
-        } else if (isAllowedGroup(ctx.chat.id)) {
-          const privacyMessage = `
+        } else {
+          // Group chat check
+          const chatIdForCheck = ctx.chat?.id;
+          const isGroupAllowed = chatIdForCheck ? isAllowedGroup(chatIdForCheck) : false;
+          
+          if (isGroupAllowed) {
+            const privacyMessage = `
 Hello! I'm now tracking and analyzing messages in this group (${ctx.chat.title}).
 
 <b>Privacy Notice:</b>
@@ -170,13 +188,14 @@ Hello! I'm now tracking and analyzing messages in this group (${ctx.chat.title})
 • No personal data is shared with third parties
 
 Use /help to see available commands.`;
-          
-          await ctx.reply(privacyMessage, { parse_mode: 'HTML' });
-          console.log(`Bot initialized in allowed group: ${ctx.chat.title} (${ctx.chat.id})`);
-        } else {
-            // If started in an unauthorized group (shouldn't happen if new_chat_members works)
-            await ctx.reply('Sorry, this bot is restricted to specific groups.');
-            await ctx.leaveChat();
+            
+            await ctx.reply(privacyMessage, { parse_mode: 'HTML' });
+            console.log(`Bot initialized in allowed group: ${ctx.chat.title} (${ctx.chat.id})`);
+          } else {
+              // If started in an unauthorized group (shouldn't happen if new_chat_members works)
+              await ctx.reply('Sorry, this bot is restricted to specific groups.');
+              await ctx.leaveChat();
+          }
         }
       } catch (error) {
         console.error(`Error handling start command: ${error.message}`);
@@ -219,11 +238,18 @@ Use /help to see available commands.`;
     // Handle stats command (Allowed groups only)
     bot.command('stats', async (ctx) => {
       try {
-        console.log(`Stats command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'})`);
+        console.log(`Stats command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'}) by user ${ctx.from.id}`);
         
         // --- Authorization Check ---
-        if (!isAllowedGroup(ctx.chat.id)) {
-          console.log(`Stats command rejected: Unauthorized group ${ctx.chat.id}`);
+        // Debug logging for authorization check
+        const chatIdForCheck = ctx.chat.id;
+        const isGroupAllowed = isAllowedGroup(chatIdForCheck);
+        const isOwner = ctx.from.id === OWNER_ID;
+        console.log(`[Stats Auth] Checking chatId: ${chatIdForCheck} (Type: ${typeof chatIdForCheck}), Allowed: ${isGroupAllowed}, IsOwner: ${isOwner}`);
+        console.log(`[Stats Auth] ALLOWED_GROUP_IDS: ${ALLOWED_GROUP_IDS} (Type: ${typeof ALLOWED_GROUP_IDS[0]})`);
+        
+        if (!isGroupAllowed && !isOwner) {
+          console.log(`Stats command rejected: Unauthorized group ${chatIdForCheck} and not owner`);
           return await ctx.reply('This command can only be used in authorized groups.');
         }
         // --- End Authorization Check ---
@@ -322,11 +348,18 @@ _Use /topics for detailed topic analysis_`;
     // Handle topics command (Allowed groups only)
     bot.command('topics', async (ctx) => {
       try {
-        console.log(`Topics command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'})`);
+        console.log(`Topics command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'}) by user ${ctx.from.id}`);
         
         // --- Authorization Check ---
-        if (!isAllowedGroup(ctx.chat.id)) {
-          console.log(`Topics command rejected: Unauthorized group ${ctx.chat.id}`);
+        // Debug logging for authorization check
+        const chatIdForCheck = ctx.chat.id;
+        const isGroupAllowed = isAllowedGroup(chatIdForCheck);
+        const isOwner = ctx.from.id === OWNER_ID;
+        console.log(`[Topics Auth] Checking chatId: ${chatIdForCheck} (Type: ${typeof chatIdForCheck}), Allowed: ${isGroupAllowed}, IsOwner: ${isOwner}`);
+        console.log(`[Topics Auth] ALLOWED_GROUP_IDS: ${ALLOWED_GROUP_IDS} (Type: ${typeof ALLOWED_GROUP_IDS[0]})`);
+        
+        if (!isGroupAllowed && !isOwner) {
+          console.log(`Topics command rejected: Unauthorized group ${chatIdForCheck} and not owner`);
           return await ctx.reply('This command can only be used in authorized groups.');
         }
         // --- End Authorization Check ---
@@ -419,8 +452,15 @@ _Use /topics for detailed topic analysis_`;
     bot.command('price', async (ctx) => {
       try {
         // --- Authorization Check ---
-        if (!isAllowedGroup(ctx.chat.id)) {
-          console.log(`Price command rejected: Unauthorized group ${ctx.chat.id}`);
+        // Debug logging for authorization check
+        const chatIdForCheck = ctx.chat.id;
+        const isGroupAllowed = isAllowedGroup(chatIdForCheck);
+        const isOwner = ctx.from.id === OWNER_ID;
+        console.log(`[Price Auth] Checking chatId: ${chatIdForCheck} (Type: ${typeof chatIdForCheck}), Allowed: ${isGroupAllowed}, IsOwner: ${isOwner}`);
+        console.log(`[Price Auth] ALLOWED_GROUP_IDS: ${ALLOWED_GROUP_IDS} (Type: ${typeof ALLOWED_GROUP_IDS[0]})`);
+        
+        if (!isGroupAllowed && !isOwner) {
+          console.log(`Price command rejected: Unauthorized group ${chatIdForCheck} and not owner`);
           return await ctx.reply('This command can only be used in authorized groups.');
         }
         // --- End Authorization Check ---
@@ -492,11 +532,18 @@ _Data from CoinGecko_
     // Add leaderboard command (Allowed groups only)
     bot.command('leaderboard', async (ctx) => {
       try {
-        console.log(`Leaderboard command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'})`);
+        console.log(`Leaderboard command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'}) by user ${ctx.from.id}`);
         
         // --- Authorization Check ---
-        if (!isAllowedGroup(ctx.chat.id)) {
-          console.log(`Leaderboard command rejected: Unauthorized group ${ctx.chat.id}`);
+        // Debug logging for authorization check
+        const chatIdForCheck = ctx.chat.id;
+        const isGroupAllowed = isAllowedGroup(chatIdForCheck);
+        const isOwner = ctx.from.id === OWNER_ID;
+        console.log(`[Leaderboard Auth] Checking chatId: ${chatIdForCheck} (Type: ${typeof chatIdForCheck}), Allowed: ${isGroupAllowed}, IsOwner: ${isOwner}`);
+        console.log(`[Leaderboard Auth] ALLOWED_GROUP_IDS: ${ALLOWED_GROUP_IDS} (Type: ${typeof ALLOWED_GROUP_IDS[0]})`);
+        
+        if (!isGroupAllowed && !isOwner) {
+          console.log(`Leaderboard command rejected: Unauthorized group ${chatIdForCheck} and not owner`);
           return await ctx.reply('This command can only be used in authorized groups.');
         }
         // --- End Authorization Check ---
@@ -642,7 +689,10 @@ ${leaderboardEntries}
       try {
         // --- Authorization Check ---
         // Skip if not in an allowed group chat
-        if (!ctx.chat || !isAllowedGroup(ctx.chat.id)) {
+        const chatIdForCheck = ctx.chat?.id;
+        const isGroupAllowed = chatIdForCheck ? isAllowedGroup(chatIdForCheck) : false;
+        
+        if (!ctx.chat || !isGroupAllowed) {
           // Don't log ignored messages from unauthorized groups to reduce noise
           // console.log(`Ignoring message from unauthorized chat: ${ctx.chat?.id} (${ctx.chat?.type})`);
           return;
@@ -772,7 +822,10 @@ ${leaderboardEntries}
         
         if (botWasAdded) {
           // --- Authorization Check ---
-          if (isAllowedGroup(ctx.chat.id)) {
+          const chatIdForCheck = ctx.chat?.id;
+          const isGroupAllowed = chatIdForCheck ? isAllowedGroup(chatIdForCheck) : false;
+          
+          if (isGroupAllowed) {
             await ctx.reply(`Hello! I've been added to "${ctx.chat.title}". I'll start tracking and analyzing messages in this group.`);
             console.log(`Bot was added to an ALLOWED group: ${ctx.chat.title} (${ctx.chat.id})`);
           } else {
