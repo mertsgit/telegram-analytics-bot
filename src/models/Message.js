@@ -446,39 +446,83 @@ messageSchema.statics.getCryptoStats = async function(chatId) {
   }
 };
 
-// Calculate message quality score
+// Calculate message quality score (Enhanced Logic)
 messageSchema.statics.calculateQualityScore = function(message, analysis) {
   let score = 0;
-  
-  // Base points for sending a message
-  score += 1;
-  
-  // Points for content with topics (relevant discussion)
-  if (analysis.topics && analysis.topics.length > 0) {
-    score += Math.min(5, analysis.topics.length);
+  const trimmedMessage = message.trim();
+  const wordCount = trimmedMessage.split(/\s+/).filter(Boolean).length;
+
+  // 1. Initial Checks for Low Effort/Spam (Zero Points)
+  if (trimmedMessage.length < 10 && wordCount <= 2) {
+      console.log(`Quality Score: 0 (Message too short/few words: "${trimmedMessage.substring(0, 20)}")`);
+      return 0; // Very short or only 1-2 words
+  }
+  // Check for excessive repetition (e.g., "aaaaa", "lololol") - basic check
+  if (/(\w)\1{4,}/.test(trimmedMessage)) {
+       console.log(`Quality Score: 0 (Excessive repetition detected: "${trimmedMessage.substring(0, 20)}")`);
+       return 0;
+  }
+  // Check for messages that are mostly non-alphanumeric (excluding spaces and common punctuation)
+  const cleanLength = trimmedMessage.replace(/[\s.,!?;:'"\(\)]/g, '').length;
+  if (cleanLength > 0) { 
+    const alphanumericRatio = (trimmedMessage.match(/[a-z0-9]/gi) || []).length / cleanLength;
+    if (trimmedMessage.length > 5 && alphanumericRatio < 0.4) {
+        console.log(`Quality Score: 0 (Low alphanumeric ratio [${alphanumericRatio.toFixed(2)}]: "${trimmedMessage.substring(0, 20)}")`);
+        return 0;
+    }
+  } else if (trimmedMessage.length > 0) {
+      // If message has length but no alphanumeric after cleaning, likely just symbols/emojis
+      console.log(`Quality Score: 0 (Mostly non-alphanumeric/symbols: "${trimmedMessage.substring(0, 20)}")`);
+      return 0;
   }
   
-  // Points for sentiment (promoting positive interaction)
-  if (analysis.sentiment === 'positive') score += 3;
-  
-  // Points for constructive crypto analysis
+  // 2. Base score for potentially valid message
+  score = 1;
+  console.log(`Quality Score: Base = 1`);
+
+  // 3. Add Positive Points
+  if (analysis.topics && analysis.topics.length > 0) {
+    const topicPoints = Math.min(5, analysis.topics.length); // Max 5 points for topics
+    score += topicPoints;
+    console.log(`Quality Score: +${topicPoints} (Topics: ${analysis.topics.join(', ').substring(0, 50)}...)`);
+  }
+  if (analysis.sentiment === 'positive') {
+    score += 3;
+    console.log(`Quality Score: +3 (Positive Sentiment)`);
+  }
   if (analysis.cryptoSentiment && analysis.cryptoSentiment !== 'neutral') {
     score += 2;
+    console.log(`Quality Score: +2 (Crypto Sentiment: ${analysis.cryptoSentiment})`);
   }
-  
-  // Points for mentioning specific cryptocurrencies (knowledgeable)
   if (analysis.mentionedCoins && analysis.mentionedCoins.length > 0) {
-    score += Math.min(5, analysis.mentionedCoins.length * 2);
+    const coinPoints = Math.min(5, analysis.mentionedCoins.length); // Points per coin, max 5
+    score += coinPoints;
+    console.log(`Quality Score: +${coinPoints} (Mentioned Coins: ${analysis.mentionedCoins.join(', ')})`);
   }
-  
-  // Points for detailed intent (questions show engagement)
-  if (analysis.intent === 'question') score += 2;
-  
-  // Penalty for potential spam or low-quality
-  if (message.length < 5) score = 0;
-  
-  // Ensure minimum score is 1 for any message that passes checks
-  return Math.max(1, score);
+  if (analysis.intent === 'question') {
+    score += 2;
+    console.log(`Quality Score: +2 (Intent: Question)`);
+  } else if (['statement', 'opinion', 'recommendation'].includes(analysis.intent)) {
+      score += 1; // Small bonus for coherent statements/opinions
+      console.log(`Quality Score: +1 (Intent: ${analysis.intent})`);
+  }
+
+  // 4. Apply Negative Penalties
+  if (analysis.sentiment === 'negative') {
+    score -= 5; // Significant penalty
+    console.log(`Quality Score: -5 (Negative Sentiment)`);
+  }
+  // Add specific profanity check (similar regex as in openai.js pre-check, simplified)
+  const profanityRegex = /\b(f\s*u\s*c\s*k|s\s*h\s*i\s*t|b\s*i\s*t\s*c\s*h|d\s*i\s*c\s*k|a\s*s\s*s|f\s*off?|cunt|cock|stfu|gtfo|f\s*you)\b/i;
+  if (profanityRegex.test(trimmedMessage)) {
+      score -= 5; // Additional penalty for explicit profanity
+      console.log(`Quality Score: -5 (Profanity Detected)`);
+  }
+
+  // 5. Final Score (ensure non-negative)
+  const finalScore = Math.max(0, score);
+  console.log(`Quality Score: Final = ${finalScore} (Message: "${trimmedMessage.substring(0, 30)}...")`);
+  return finalScore;
 };
 
 // Get chat leaderboard with quality-based point system
