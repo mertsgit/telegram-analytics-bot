@@ -116,14 +116,30 @@ const launchBotWithRetry = async (retryDelay = 5000) => {
 
 // Check if the chat ID is in the allowed list
 const isAllowedGroup = (chatId) => {
-  // Convert chatId to number if it's a string
-  const numericChatId = typeof chatId === 'string' ? parseInt(chatId, 10) : chatId;
+  // Convert chatId to string for easier manipulation
+  const chatIdStr = chatId.toString();
   
-  // Check each allowed ID (both as is and as string comparison for safety)
+  // Check if the chatId starts with -100 (supergroup format)
+  // If so, we need to remove this prefix for comparison
+  const normalizedChatId = chatIdStr.startsWith('-100') ? 
+    parseInt(chatIdStr.substring(4)) * -1 : // Remove -100 prefix and keep it negative
+    parseInt(chatIdStr);
+  
+  console.log(`Normalizing chatId: original=${chatId}, normalized=${normalizedChatId}`);
+  
+  // Check each allowed ID
   for (const allowedId of ALLOWED_GROUP_IDS) {
-    if (allowedId === numericChatId || allowedId === chatId || 
-        allowedId.toString() === chatId.toString()) {
+    // Try direct match
+    if (allowedId === chatId || allowedId === normalizedChatId) {
       console.log(`Group ${chatId} is authorized (matched with ${allowedId})`);
+      return true;
+    }
+    
+    // Also check string form (handles the -100 prefix case)
+    const allowedIdStr = allowedId.toString();
+    if (chatIdStr === allowedIdStr || 
+        chatIdStr === `-100${allowedIdStr.substring(1)}`) { // Convert -123 to -100123 format
+      console.log(`Group ${chatId} is authorized (string matched with ${allowedId})`);
       return true;
     }
   }
