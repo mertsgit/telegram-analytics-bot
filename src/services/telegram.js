@@ -9,7 +9,7 @@ require('dotenv').config();
 const ALLOWED_GROUP_IDS = [
   -2484836322, // Replace with actual negative group ID if needed
   -2521462418, // Replace with actual negative group ID if needed
-  -2648239653  // Replace with actual negative group ID if needed
+   2648239653  // Replace with actual negative group ID if needed
 ];
 const OWNER_ID = 5348052974;
 // --- End Authorization Configuration ---
