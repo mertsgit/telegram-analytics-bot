@@ -5,10 +5,6 @@ const { isDBConnected } = require('../config/database');
 const axios = require('axios');
 require('dotenv').config();
 
-// Owner Telegram ID and authorized chats
-const OWNER_ID = 5348052974;
-const authorizedChats = new Set();
-
 // Initialize bot with error handling
 let bot;
 let botInitialized = false;
@@ -43,80 +39,6 @@ const getServiceStatus = () => {
     initializationError,
     launchRetryCount
   };
-};
-
-// Check if a user is authorized to use the bot
-const isAuthorizedUser = (userId) => {
-  return userId === OWNER_ID;
-};
-
-// Check if a chat is authorized
-const isAuthorizedChat = (chatId) => {
-  return authorizedChats.has(chatId);
-};
-
-// Function to authorize a chat
-const authorizeChat = (chatId) => {
-  authorizedChats.add(chatId);
-  console.log(`Chat ${chatId} has been authorized`);
-};
-
-// Function to check if the current user is an admin of the group
-const isUserAdmin = async (ctx) => {
-  try {
-    if (!ctx.chat || ctx.chat.type === 'private') return false;
-    
-    const userId = ctx.from.id;
-    const chatId = ctx.chat.id;
-    
-    const chatMember = await ctx.telegram.getChatMember(chatId, userId);
-    return ['creator', 'administrator'].includes(chatMember.status);
-  } catch (error) {
-    console.error(`Error checking admin status: ${error.message}`);
-    return false;
-  }
-};
-
-// Function to check authorization and leave unauthorized groups
-const checkGroupAuthorization = async (ctx) => {
-  if (!ctx.chat || ctx.chat.type === 'private') return true;
-  
-  const chatId = ctx.chat.id;
-  
-  // If chat is already authorized, allow it
-  if (isAuthorizedChat(chatId)) return true;
-  
-  try {
-    // Get the chat admins
-    const admins = await ctx.telegram.getChatAdministrators(chatId);
-    
-    // Check if the owner is an admin
-    const ownerIsAdmin = admins.some(admin => admin.user.id === OWNER_ID);
-    
-    if (ownerIsAdmin) {
-      // Authorize this chat as the owner is an admin
-      authorizeChat(chatId);
-      return true;
-    } else {
-      // Owner is not an admin, leave the group
-      await ctx.reply('This bot is private and can only be used in groups where the owner is an admin. The bot will now leave this group.');
-      await ctx.telegram.leaveChat(chatId);
-      console.log(`Bot left unauthorized group: ${ctx.chat.title} (${chatId})`);
-      return false;
-    }
-  } catch (error) {
-    console.error(`Error checking group authorization: ${error.message}`);
-    
-    // On error, default to leaving the group to be safe
-    try {
-      await ctx.reply('Unable to verify authorization. This bot will leave this group.');
-      await ctx.telegram.leaveChat(chatId);
-    } catch (leaveError) {
-      console.error(`Error leaving chat: ${leaveError.message}`);
-    }
-    
-    return false;
-  }
 };
 
 // Helper to format service status message
@@ -217,110 +139,14 @@ const initBot = async () => {
       // Continue despite this error
     }
 
-    // Owner-only admin commands
-    bot.command('authorize', async (ctx) => {
-      try {
-        // Only owner can run this command
-        if (ctx.from.id !== OWNER_ID) {
-          await ctx.reply('This command is only available to the bot owner.');
-          return;
-        }
-        
-        // Check command format
-        const args = ctx.message.text.split(' ');
-        if (args.length < 2) {
-          await ctx.reply('Usage: /authorize <chat_id>');
-          return;
-        }
-        
-        const chatIdToAuthorize = parseInt(args[1], 10);
-        if (isNaN(chatIdToAuthorize)) {
-          await ctx.reply('Invalid chat ID. Please provide a valid numeric chat ID.');
-          return;
-        }
-        
-        // Authorize the chat
-        authorizeChat(chatIdToAuthorize);
-        await ctx.reply(`Chat ID ${chatIdToAuthorize} has been authorized.`);
-      } catch (error) {
-        console.error(`Error handling authorize command: ${error.message}`);
-        await ctx.reply('Error processing command.');
-      }
-    });
-    
-    bot.command('deauthorize', async (ctx) => {
-      try {
-        // Only owner can run this command
-        if (ctx.from.id !== OWNER_ID) {
-          await ctx.reply('This command is only available to the bot owner.');
-          return;
-        }
-        
-        // Check command format
-        const args = ctx.message.text.split(' ');
-        if (args.length < 2) {
-          await ctx.reply('Usage: /deauthorize <chat_id>');
-          return;
-        }
-        
-        const chatIdToDeauthorize = parseInt(args[1], 10);
-        if (isNaN(chatIdToDeauthorize)) {
-          await ctx.reply('Invalid chat ID. Please provide a valid numeric chat ID.');
-          return;
-        }
-        
-        // Deauthorize the chat
-        if (authorizedChats.has(chatIdToDeauthorize)) {
-          authorizedChats.delete(chatIdToDeauthorize);
-          await ctx.reply(`Chat ID ${chatIdToDeauthorize} has been deauthorized.`);
-          console.log(`Chat ${chatIdToDeauthorize} has been deauthorized`);
-        } else {
-          await ctx.reply(`Chat ID ${chatIdToDeauthorize} was not authorized.`);
-        }
-      } catch (error) {
-        console.error(`Error handling deauthorize command: ${error.message}`);
-        await ctx.reply('Error processing command.');
-      }
-    });
-    
-    bot.command('listauth', async (ctx) => {
-      try {
-        // Only owner can run this command
-        if (ctx.from.id !== OWNER_ID) {
-          await ctx.reply('This command is only available to the bot owner.');
-          return;
-        }
-        
-        if (authorizedChats.size === 0) {
-          await ctx.reply('No chats are currently authorized.');
-          return;
-        }
-        
-        const authList = Array.from(authorizedChats).join('\n');
-        await ctx.reply(`Authorized chat IDs:\n${authList}`);
-      } catch (error) {
-        console.error(`Error handling listauth command: ${error.message}`);
-        await ctx.reply('Error processing command.');
-      }
-    });
-
     // Handle start command
     bot.command('start', async (ctx) => {
       try {
-        // Check if the user is the owner for private chats
         if (ctx.chat.type === 'private') {
-          if (isAuthorizedUser(ctx.from.id)) {
-            await ctx.reply('Hello! I track and analyze messages in groups. Add me to a group to start working!');
-          } else {
-            await ctx.reply('This is a private bot. Only the owner can use it.');
-          }
+          await ctx.reply('Hello! I track and analyze messages in groups. Add me to a group to start working!');
         } else {
-          // For groups, check authorization
-          const isAuthorized = await checkGroupAuthorization(ctx);
-          if (isAuthorized) {
-            await ctx.reply(`Hello! I'm now tracking and analyzing messages in this group (${ctx.chat.title}).`);
-            console.log(`Bot initialized in authorized group: ${ctx.chat.title} (${ctx.chat.id})`);
-          }
+          await ctx.reply(`Hello! I'm now tracking and analyzing messages in this group (${ctx.chat.title}).`);
+          console.log(`Bot initialized in group: ${ctx.chat.title} (${ctx.chat.id})`);
         }
       } catch (error) {
         console.error(`Error handling start command: ${error.message}`);
@@ -767,10 +593,6 @@ ${leaderboardEntries}
           return;
         }
         
-        // Check group authorization
-        const isAuthorized = await checkGroupAuthorization(ctx);
-        if (!isAuthorized) return;
-        
         // Skip if database is not connected
         if (!isDBConnected()) {
           console.log(`Skipping message processing: Database not connected (Chat: ${ctx.chat.title})`);
@@ -893,14 +715,8 @@ ${leaderboardEntries}
         const botWasAdded = newMembers.some(member => member.id === botInfo.id);
         
         if (botWasAdded) {
-          // Verify if this group is authorized
-          const isAuthorized = await checkGroupAuthorization(ctx);
-          
-          if (isAuthorized) {
-            await ctx.reply(`Hello! I've been added to "${ctx.chat.title}". I'll start tracking and analyzing messages in this group.`);
-            console.log(`Bot was added to authorized group: ${ctx.chat.title} (${ctx.chat.id})`);
-          }
-          // If not authorized, checkGroupAuthorization will handle leaving the group
+          await ctx.reply(`Hello! I've been added to "${ctx.chat.title}". I'll start tracking and analyzing messages in this group.`);
+          console.log(`Bot was added to a new group: ${ctx.chat.title} (${ctx.chat.id})`);
         }
       } catch (error) {
         console.error(`Error handling new chat members: ${error.message}`);
