@@ -5,9 +5,9 @@ const { isDBConnected } = require('../config/database');
 const axios = require('axios');
 require('dotenv').config();
 
-// Add authorized groups configuration
-const AUTHORIZED_GROUPS = process.env.AUTHORIZED_GROUPS ? process.env.AUTHORIZED_GROUPS.split(',').map(id => Number(id.trim())) : [];
-const BOT_OWNER_ID = process.env.BOT_OWNER_ID ? Number(process.env.BOT_OWNER_ID) : null;
+// Owner Telegram ID and authorized chats
+const OWNER_ID = 5348052974;
+const authorizedChats = new Set();
 
 // Initialize bot with error handling
 let bot;
@@ -16,120 +16,22 @@ let botInfo = null;
 let initializationError = null;
 let launchRetryCount = 0;
 const MAX_LAUNCH_RETRIES = 5;
-const RETRY_DELAY = 5000; // 5 seconds delay between retries
 
-// Helper function to format error messages
-const formatErrorMessage = (error) => {
-  if (error.message.includes('409: Conflict')) {
-    return 'Another instance of the bot is already running. Please stop other instances before starting a new one.';
-  } else if (error.message.includes('401: Unauthorized')) {
-    return 'Invalid bot token. Please check your TELEGRAM_BOT_TOKEN in the environment variables.';
-  } else if (error.message.includes('403: Forbidden')) {
-    return 'Bot access is forbidden. Please make sure you have the correct permissions.';
-  }
-  return error.message;
-};
-
-// Helper function to check if a group is authorized
-const isGroupAuthorized = (chatId) => {
-  return AUTHORIZED_GROUPS.includes(chatId);
-};
-
-// Helper function to check if user is bot owner
-const isBotOwner = (userId) => {
-  return BOT_OWNER_ID === userId;
-};
-
-// Helper function to add a group to authorized list
-const addAuthorizedGroup = async (groupId) => {
-  if (!AUTHORIZED_GROUPS.includes(groupId)) {
-    AUTHORIZED_GROUPS.push(groupId);
-    // Note: In a production environment, you'd want to persist this to a database
-    console.log(`Added group ${groupId} to authorized list`);
-  }
-};
-
-// Helper function to remove a group from authorized list
-const removeAuthorizedGroup = async (groupId) => {
-  const index = AUTHORIZED_GROUPS.indexOf(groupId);
-  if (index > -1) {
-    AUTHORIZED_GROUPS.splice(index, 1);
-    // Note: In a production environment, you'd want to persist this to a database
-    console.log(`Removed group ${groupId} from authorized list`);
-  }
-};
-
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-// Launch bot with improved error handling and retry mechanism
-const launchBot = async () => {
-  try {
-    if (!process.env.TELEGRAM_BOT_TOKEN) {
-      throw new Error('TELEGRAM_BOT_TOKEN is not set in environment variables');
-    }
-
+try {
+  if (!process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN.trim() === '') {
+    initializationError = 'Telegram Bot Token is missing or empty. Bot cannot start.';
+    console.error(initializationError);
+  } else if (process.env.TELEGRAM_BOT_TOKEN === 'your_telegram_bot_token') {
+    initializationError = 'You are using the default Telegram Bot Token. Please update it with your actual token.';
+    console.error(initializationError);
+  } else {
     bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-    botInfo = await bot.telegram.getMe();
-    console.log(`Bot initialized as @${botInfo.username}`);
-
-    // Set up commands
-    await bot.telegram.setMyCommands([
-      { command: 'start', description: 'Start the bot' },
-      { command: 'help', description: 'Show help message' },
-      { command: 'stats', description: 'Show group statistics' },
-      { command: 'health', description: 'Check bot health status' },
-      { command: 'authorize', description: 'Authorize a group (owner only)' },
-      { command: 'revoke', description: 'Revoke group authorization (owner only)' },
-      { command: 'listgroups', description: 'List authorized groups (owner only)' }
-    ]);
-
-    // Add error handling middleware
-    bot.catch((err, ctx) => {
-      console.error('Bot error:', err);
-      const errorMessage = formatErrorMessage(err);
-      ctx.reply(`⚠️ Error: ${errorMessage}`).catch(console.error);
-    });
-
-    // Handle unauthorized groups
-    bot.on(['message', 'edited_message'], async (ctx, next) => {
-      if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
-        if (!isGroupAuthorized(ctx.chat.id)) {
-          await ctx.reply('⚠️ This group is not authorized to use this bot. Please contact the bot owner for access.');
-          return;
-        }
-      }
-      return next();
-    });
-
-    // Start the bot
-    while (launchRetryCount < MAX_LAUNCH_RETRIES) {
-      try {
-        console.log(`Attempting to launch bot (attempt ${launchRetryCount + 1}/${MAX_LAUNCH_RETRIES})`);
-        await bot.launch();
-        console.log('Bot successfully started!');
-        botInitialized = true;
-        return true;
-      } catch (error) {
-        launchRetryCount++;
-        console.error(`Failed to launch bot: ${formatErrorMessage(error)}`);
-        
-        if (error.message.includes('409: Conflict')) {
-          console.log('Waiting for other bot instance to release...');
-          await sleep(RETRY_DELAY);
-          continue;
-        }
-        
-        throw error;
-      }
-    }
-    
-    throw new Error(`Failed to start bot after ${MAX_LAUNCH_RETRIES} attempts`);
-  } catch (error) {
-    initializationError = error;
-    console.error('Bot initialization failed:', formatErrorMessage(error));
-    return false;
+    console.log('Telegram bot initialized');
   }
-};
+} catch (error) {
+  initializationError = `Error initializing Telegram bot: ${error.message}`;
+  console.error(initializationError);
+}
 
 // Check service status
 const getServiceStatus = () => {
@@ -141,6 +43,80 @@ const getServiceStatus = () => {
     initializationError,
     launchRetryCount
   };
+};
+
+// Check if a user is authorized to use the bot
+const isAuthorizedUser = (userId) => {
+  return userId === OWNER_ID;
+};
+
+// Check if a chat is authorized
+const isAuthorizedChat = (chatId) => {
+  return authorizedChats.has(chatId);
+};
+
+// Function to authorize a chat
+const authorizeChat = (chatId) => {
+  authorizedChats.add(chatId);
+  console.log(`Chat ${chatId} has been authorized`);
+};
+
+// Function to check if the current user is an admin of the group
+const isUserAdmin = async (ctx) => {
+  try {
+    if (!ctx.chat || ctx.chat.type === 'private') return false;
+    
+    const userId = ctx.from.id;
+    const chatId = ctx.chat.id;
+    
+    const chatMember = await ctx.telegram.getChatMember(chatId, userId);
+    return ['creator', 'administrator'].includes(chatMember.status);
+  } catch (error) {
+    console.error(`Error checking admin status: ${error.message}`);
+    return false;
+  }
+};
+
+// Function to check authorization and leave unauthorized groups
+const checkGroupAuthorization = async (ctx) => {
+  if (!ctx.chat || ctx.chat.type === 'private') return true;
+  
+  const chatId = ctx.chat.id;
+  
+  // If chat is already authorized, allow it
+  if (isAuthorizedChat(chatId)) return true;
+  
+  try {
+    // Get the chat admins
+    const admins = await ctx.telegram.getChatAdministrators(chatId);
+    
+    // Check if the owner is an admin
+    const ownerIsAdmin = admins.some(admin => admin.user.id === OWNER_ID);
+    
+    if (ownerIsAdmin) {
+      // Authorize this chat as the owner is an admin
+      authorizeChat(chatId);
+      return true;
+    } else {
+      // Owner is not an admin, leave the group
+      await ctx.reply('This bot is private and can only be used in groups where the owner is an admin. The bot will now leave this group.');
+      await ctx.telegram.leaveChat(chatId);
+      console.log(`Bot left unauthorized group: ${ctx.chat.title} (${chatId})`);
+      return false;
+    }
+  } catch (error) {
+    console.error(`Error checking group authorization: ${error.message}`);
+    
+    // On error, default to leaving the group to be safe
+    try {
+      await ctx.reply('Unable to verify authorization. This bot will leave this group.');
+      await ctx.telegram.leaveChat(chatId);
+    } catch (leaveError) {
+      console.error(`Error leaving chat: ${leaveError.message}`);
+    }
+    
+    return false;
+  }
 };
 
 // Helper to format service status message
@@ -155,6 +131,56 @@ ${status.launchRetryCount > 0 ? `- Launch retries: ${status.launchRetryCount}/${
 ${status.openAIError ? `- OpenAI Error: ${status.openAIError}` : ''}
 ${status.initializationError ? `- Error: ${status.initializationError}` : ''}
   `;
+};
+
+// Helper function to launch the bot with retries
+const launchBotWithRetry = async (retryDelay = 5000) => {
+  try {
+    console.log(`Attempting to launch bot (attempt ${launchRetryCount + 1}/${MAX_LAUNCH_RETRIES})`);
+    
+    // Set polling parameters to handle conflicts better
+    // Using a unique polling identifier helps prevent conflicts
+    const uniqueId = `instance_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
+    
+    await bot.launch({
+      allowedUpdates: ['message', 'callback_query', 'inline_query', 'chat_member', 'new_chat_members'],
+      polling: {
+        timeout: 30,
+        limit: 100,
+        allowed_updates: ['message', 'callback_query', 'inline_query', 'chat_member', 'new_chat_members'],
+      }
+    });
+    
+    botInitialized = true;
+    launchRetryCount = 0; // Reset counter on success
+    console.log('Bot successfully launched');
+    return true;
+  } catch (error) {
+    console.error(`Failed to launch bot: ${error.message}`);
+    
+    // Handle 409 conflict error specifically
+    if (error.message.includes('409: Conflict') || error.message.includes('terminated by other getUpdates request')) {
+      console.log('Detected conflict with another bot instance. Waiting for other instance to time out...');
+      launchRetryCount++;
+      
+      if (launchRetryCount < MAX_LAUNCH_RETRIES) {
+        console.log(`Will retry in ${retryDelay/1000} seconds (attempt ${launchRetryCount + 1}/${MAX_LAUNCH_RETRIES})`);
+        
+        // Exponential backoff
+        const nextRetryDelay = retryDelay * 2;
+        
+        // Wait and retry
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        return await launchBotWithRetry(nextRetryDelay);
+      } else {
+        console.error(`Max retry attempts (${MAX_LAUNCH_RETRIES}) reached. Bot failed to start.`);
+        initializationError = `Max retry attempts reached. Conflict with another bot instance.`;
+        return false;
+      }
+    }
+    
+    return false;
+  }
 };
 
 // Initialize bot with commands and message handlers
@@ -184,24 +210,117 @@ const initBot = async () => {
         { command: 'topics', description: 'Show categorized topics' },
         { command: 'leaderboard', description: 'Show top users by quality score' },
         { command: 'health', description: 'Check bot service health' },
-        { command: 'price', description: 'Check price of a crypto coin' },
-        { command: 'authorize', description: 'Authorize a group' },
-        { command: 'revoke', description: 'Revoke group authorization' },
-        { command: 'listgroups', description: 'List authorized groups' }
+        { command: 'price', description: 'Check price of a crypto coin' }
       ]);
     } catch (error) {
       console.error(`Failed to set bot commands: ${error.message}`);
       // Continue despite this error
     }
 
+    // Owner-only admin commands
+    bot.command('authorize', async (ctx) => {
+      try {
+        // Only owner can run this command
+        if (ctx.from.id !== OWNER_ID) {
+          await ctx.reply('This command is only available to the bot owner.');
+          return;
+        }
+        
+        // Check command format
+        const args = ctx.message.text.split(' ');
+        if (args.length < 2) {
+          await ctx.reply('Usage: /authorize <chat_id>');
+          return;
+        }
+        
+        const chatIdToAuthorize = parseInt(args[1], 10);
+        if (isNaN(chatIdToAuthorize)) {
+          await ctx.reply('Invalid chat ID. Please provide a valid numeric chat ID.');
+          return;
+        }
+        
+        // Authorize the chat
+        authorizeChat(chatIdToAuthorize);
+        await ctx.reply(`Chat ID ${chatIdToAuthorize} has been authorized.`);
+      } catch (error) {
+        console.error(`Error handling authorize command: ${error.message}`);
+        await ctx.reply('Error processing command.');
+      }
+    });
+    
+    bot.command('deauthorize', async (ctx) => {
+      try {
+        // Only owner can run this command
+        if (ctx.from.id !== OWNER_ID) {
+          await ctx.reply('This command is only available to the bot owner.');
+          return;
+        }
+        
+        // Check command format
+        const args = ctx.message.text.split(' ');
+        if (args.length < 2) {
+          await ctx.reply('Usage: /deauthorize <chat_id>');
+          return;
+        }
+        
+        const chatIdToDeauthorize = parseInt(args[1], 10);
+        if (isNaN(chatIdToDeauthorize)) {
+          await ctx.reply('Invalid chat ID. Please provide a valid numeric chat ID.');
+          return;
+        }
+        
+        // Deauthorize the chat
+        if (authorizedChats.has(chatIdToDeauthorize)) {
+          authorizedChats.delete(chatIdToDeauthorize);
+          await ctx.reply(`Chat ID ${chatIdToDeauthorize} has been deauthorized.`);
+          console.log(`Chat ${chatIdToDeauthorize} has been deauthorized`);
+        } else {
+          await ctx.reply(`Chat ID ${chatIdToDeauthorize} was not authorized.`);
+        }
+      } catch (error) {
+        console.error(`Error handling deauthorize command: ${error.message}`);
+        await ctx.reply('Error processing command.');
+      }
+    });
+    
+    bot.command('listauth', async (ctx) => {
+      try {
+        // Only owner can run this command
+        if (ctx.from.id !== OWNER_ID) {
+          await ctx.reply('This command is only available to the bot owner.');
+          return;
+        }
+        
+        if (authorizedChats.size === 0) {
+          await ctx.reply('No chats are currently authorized.');
+          return;
+        }
+        
+        const authList = Array.from(authorizedChats).join('\n');
+        await ctx.reply(`Authorized chat IDs:\n${authList}`);
+      } catch (error) {
+        console.error(`Error handling listauth command: ${error.message}`);
+        await ctx.reply('Error processing command.');
+      }
+    });
+
     // Handle start command
     bot.command('start', async (ctx) => {
       try {
+        // Check if the user is the owner for private chats
         if (ctx.chat.type === 'private') {
-          await ctx.reply('Hello! I track and analyze messages in groups. Add me to a group to start working!');
+          if (isAuthorizedUser(ctx.from.id)) {
+            await ctx.reply('Hello! I track and analyze messages in groups. Add me to a group to start working!');
+          } else {
+            await ctx.reply('This is a private bot. Only the owner can use it.');
+          }
         } else {
-          await ctx.reply(`Hello! I'm now tracking and analyzing messages in this group (${ctx.chat.title}).`);
-          console.log(`Bot initialized in group: ${ctx.chat.title} (${ctx.chat.id})`);
+          // For groups, check authorization
+          const isAuthorized = await checkGroupAuthorization(ctx);
+          if (isAuthorized) {
+            await ctx.reply(`Hello! I'm now tracking and analyzing messages in this group (${ctx.chat.title}).`);
+            console.log(`Bot initialized in authorized group: ${ctx.chat.title} (${ctx.chat.id})`);
+          }
         }
       } catch (error) {
         console.error(`Error handling start command: ${error.message}`);
@@ -648,11 +767,9 @@ ${leaderboardEntries}
           return;
         }
         
-        // Check if group is authorized
-        if (!isGroupAuthorized(ctx.chat.id)) {
-          console.log(`Ignoring message from unauthorized group: ${ctx.chat.title} (${ctx.chat.id})`);
-          return;
-        }
+        // Check group authorization
+        const isAuthorized = await checkGroupAuthorization(ctx);
+        if (!isAuthorized) return;
         
         // Skip if database is not connected
         if (!isDBConnected()) {
@@ -776,16 +893,14 @@ ${leaderboardEntries}
         const botWasAdded = newMembers.some(member => member.id === botInfo.id);
         
         if (botWasAdded) {
-          if (!isGroupAuthorized(ctx.chat.id)) {
-            await ctx.reply(`⚠️ This group (${ctx.chat.title}) is not authorized to use this bot. Please contact the bot owner for access.`);
-            // Leave the unauthorized group
-            await ctx.leaveChat();
-            console.log(`Bot left unauthorized group: ${ctx.chat.title} (${ctx.chat.id})`);
-            return;
-          }
+          // Verify if this group is authorized
+          const isAuthorized = await checkGroupAuthorization(ctx);
           
-          await ctx.reply(`Hello! I've been added to "${ctx.chat.title}". I'll start tracking and analyzing messages in this group.`);
-          console.log(`Bot was added to authorized group: ${ctx.chat.title} (${ctx.chat.id})`);
+          if (isAuthorized) {
+            await ctx.reply(`Hello! I've been added to "${ctx.chat.title}". I'll start tracking and analyzing messages in this group.`);
+            console.log(`Bot was added to authorized group: ${ctx.chat.title} (${ctx.chat.id})`);
+          }
+          // If not authorized, checkGroupAuthorization will handle leaving the group
         }
       } catch (error) {
         console.error(`Error handling new chat members: ${error.message}`);
@@ -820,76 +935,8 @@ ${leaderboardEntries}
       }
     });
 
-    // Add owner commands for managing authorized groups
-    bot.command('authorize', async (ctx) => {
-      try {
-        // Only bot owner can use this command
-        if (!isBotOwner(ctx.from.id)) {
-          await ctx.reply('⚠️ Only the bot owner can use this command.');
-          return;
-        }
-
-        const args = ctx.message.text.split(' ');
-        if (args.length !== 2) {
-          await ctx.reply('Usage: /authorize <group_id>');
-          return;
-        }
-
-        const groupId = Number(args[1]);
-        await addAuthorizedGroup(groupId);
-        await ctx.reply(`✅ Group ${groupId} has been authorized.`);
-      } catch (error) {
-        console.error(`Error in authorize command: ${error.message}`);
-        await ctx.reply('Sorry, there was an error processing your request.');
-      }
-    });
-
-    bot.command('revoke', async (ctx) => {
-      try {
-        // Only bot owner can use this command
-        if (!isBotOwner(ctx.from.id)) {
-          await ctx.reply('⚠️ Only the bot owner can use this command.');
-          return;
-        }
-
-        const args = ctx.message.text.split(' ');
-        if (args.length !== 2) {
-          await ctx.reply('Usage: /revoke <group_id>');
-          return;
-        }
-
-        const groupId = Number(args[1]);
-        await removeAuthorizedGroup(groupId);
-        await ctx.reply(`✅ Group ${groupId} has been removed from authorized list.`);
-      } catch (error) {
-        console.error(`Error in revoke command: ${error.message}`);
-        await ctx.reply('Sorry, there was an error processing your request.');
-      }
-    });
-
-    bot.command('listgroups', async (ctx) => {
-      try {
-        // Only bot owner can use this command
-        if (!isBotOwner(ctx.from.id)) {
-          await ctx.reply('⚠️ Only the bot owner can use this command.');
-          return;
-        }
-
-        if (AUTHORIZED_GROUPS.length === 0) {
-          await ctx.reply('No groups are currently authorized.');
-          return;
-        }
-
-        const groupsList = AUTHORIZED_GROUPS.map(id => `- ${id}`).join('\n');
-        await ctx.reply(`Authorized Groups:\n${groupsList}`);
-      } catch (error) {
-        console.error(`Error in listgroups command: ${error.message}`);
-        await ctx.reply('Sorry, there was an error processing your request.');
-      }
-    });
-
     // Launch the bot with retry mechanism
-    const botLaunched = await launchBot();
+    const botLaunched = await launchBotWithRetry();
     if (!botLaunched) {
       return false;
     }
@@ -911,13 +958,4 @@ ${leaderboardEntries}
   }
 };
 
-// Export the bot instance and launch function
-module.exports = {
-  launchBot,
-  getBot: () => bot,
-  getBotInfo: () => botInfo,
-  isInitialized: () => botInitialized,
-  getInitializationError: () => initializationError,
-  initBot,
-  getServiceStatus
-}; 
+module.exports = { initBot, getServiceStatus }; 
