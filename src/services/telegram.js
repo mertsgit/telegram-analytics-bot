@@ -258,14 +258,6 @@ Use /help to see available commands.`;
           return `${index + 1}. ${sentiment}: ${sentimentData[sentiment] || 0}`;
         }).join('\n');
         
-        // Format sentiment visualization with numbers
-        const sentimentBars = sentiments.map((sentiment, index) => {
-          const percentage = sentimentPercentages[sentiment] || 0;
-          const barLength = Math.max(1, Math.round(percentage / 5)); // 1 bar per 5%
-          const bar = '█'.repeat(barLength);
-          return `${index + 1}. ${sentiment}: ${bar} ${percentage}%`;
-        }).join('\n');
-        
         // Check for crypto-related topics
         const cryptoTopics = stats.topics
           .filter(t => /bitcoin|btc|eth|ethereum|crypto|token|blockchain|solana|sol|nft|defi|trading|coin/i.test(t._id))
@@ -275,11 +267,10 @@ Use /help to see available commands.`;
         const statsMessage = `
 📊 *Sentiment Analysis for "${ctx.chat.title}"*
 
-${sentimentNumbers}
+*Sentiment Breakdown:*
+${sentiments.map(s => `- ${s.charAt(0).toUpperCase() + s.slice(1)}: ${sentimentPercentages[s]}% (${sentimentData[s] || 0} messages)`).join('\n')}
 
 *Overall sentiment:* The group has a predominantly ${overallTone} tone (${sentimentPercentages[overallTone]}%)
-
-${sentimentBars}
 
 *Chat Activity:*
 - Total messages: ${stats.totalMessages}
