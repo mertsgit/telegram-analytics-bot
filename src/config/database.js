@@ -13,8 +13,9 @@ const connectDB = async () => {
     }
 
     const conn = await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
+      // These options are deprecated and will be removed
+      // useNewUrlParser: true, 
+      // useUnifiedTopology: true,
     });
     
     isConnected = true;
