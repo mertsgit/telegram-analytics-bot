@@ -90,12 +90,15 @@ const messageSchema = new mongoose.Schema({
 });
 
 messageSchema.statics.getChatStats = async function(chatId) {
+  // Normalize chatId to handle -100 prefixes consistently
+  const normalizedChatId = this.normalizeChatId(chatId);
+  
   try {
-    console.log(`Getting stats for chat ${chatId}`);
+    console.log(`Getting stats for chat ${normalizedChatId}`);
     
     // First, check if we have any messages for this chat
-    const messageCount = await this.countDocuments({ chatId });
-    console.log(`Found ${messageCount} messages for chat ${chatId}`);
+    const messageCount = await this.countDocuments({ chatId: normalizedChatId });
+    console.log(`Found ${messageCount} messages for chat ${normalizedChatId}`);
     
     if (messageCount === 0) {
       return {
@@ -109,7 +112,7 @@ messageSchema.statics.getChatStats = async function(chatId) {
 
     // Get basic stats
     const basicStats = await this.aggregate([
-      { $match: { chatId: chatId } },
+      { $match: { chatId: normalizedChatId } },
       {
         $group: {
           _id: null,
@@ -122,7 +125,7 @@ messageSchema.statics.getChatStats = async function(chatId) {
     // Get sentiment distribution
     const sentiments = await this.aggregate([
       { $match: { 
-        chatId: chatId,
+        chatId: normalizedChatId,
         'analysis.sentiment': { $exists: true, $ne: null }
       }},
       {
@@ -137,7 +140,7 @@ messageSchema.statics.getChatStats = async function(chatId) {
     // Get top topics
     const topics = await this.aggregate([
       { $match: { 
-        chatId: chatId,
+        chatId: normalizedChatId,
         'analysis.topics': { $exists: true, $ne: [] }
       }},
       { $unwind: "$analysis.topics" },
@@ -153,7 +156,7 @@ messageSchema.statics.getChatStats = async function(chatId) {
 
     // Get most active users
     const activeUsers = await this.aggregate([
-      { $match: { chatId: chatId } },
+      { $match: { chatId: normalizedChatId } },
       {
         $group: {
           _id: {
@@ -177,21 +180,24 @@ messageSchema.statics.getChatStats = async function(chatId) {
       activeUsers: activeUsers || []
     };
 
-    console.log(`Stats generated successfully for chat ${chatId}:`, JSON.stringify(stats, null, 2));
+    console.log(`Stats generated successfully for chat ${normalizedChatId}:`, JSON.stringify(stats, null, 2));
     return stats;
   } catch (error) {
-    console.error(`Error getting stats for chat ${chatId}:`, error);
+    console.error(`Error getting stats for chat ${normalizedChatId}:`, error);
     throw error;
   }
 };
 
 messageSchema.statics.getChatTopics = async function(chatId) {
+  // Normalize chatId to handle -100 prefixes consistently
+  const normalizedChatId = this.normalizeChatId(chatId);
+  
   try {
-    console.log(`Getting topics for chat ${chatId}`);
+    console.log(`Getting topics for chat ${normalizedChatId}`);
     
     // First check if we have any messages
-    const messageCount = await this.countDocuments({ chatId });
-    console.log(`Found ${messageCount} total messages for chat ${chatId}`);
+    const messageCount = await this.countDocuments({ chatId: normalizedChatId });
+    console.log(`Found ${messageCount} total messages for chat ${normalizedChatId}`);
     
     if (messageCount === 0) {
       return [];
@@ -199,11 +205,11 @@ messageSchema.statics.getChatTopics = async function(chatId) {
     
     // Check for messages with topics specifically
     const messagesWithTopics = await this.countDocuments({
-      chatId,
+      chatId: normalizedChatId,
       'analysis.topics': { $exists: true, $ne: [] }
     });
     
-    console.log(`Found ${messagesWithTopics} messages with topics for chat ${chatId}`);
+    console.log(`Found ${messagesWithTopics} messages with topics for chat ${normalizedChatId}`);
     
     if (messagesWithTopics === 0) {
       return [];
@@ -214,7 +220,7 @@ messageSchema.statics.getChatTopics = async function(chatId) {
       const topics = await this.aggregate([
         {
           $match: {
-            chatId: chatId,
+            chatId: normalizedChatId,
             'analysis.topics': { $exists: true, $ne: [] }
           }
         },
@@ -236,15 +242,15 @@ messageSchema.statics.getChatTopics = async function(chatId) {
         { $limit: 15 }
       ]).exec();
 
-      console.log(`Topics retrieved successfully for chat ${chatId}: ${topics.length} topics found`);
+      console.log(`Topics retrieved successfully for chat ${normalizedChatId}: ${topics.length} topics found`);
       return topics;
     } catch (aggregationError) {
-      console.error(`Error during topic aggregation for chat ${chatId}:`, aggregationError);
+      console.error(`Error during topic aggregation for chat ${normalizedChatId}:`, aggregationError);
       
       // Fallback to simpler approach if the aggregation fails
-      console.log(`Using fallback topic extraction for chat ${chatId}`);
+      console.log(`Using fallback topic extraction for chat ${normalizedChatId}`);
       const messages = await this.find(
-        { chatId, 'analysis.topics': { $exists: true, $ne: [] } },
+        { chatId: normalizedChatId, 'analysis.topics': { $exists: true, $ne: [] } },
         { 'analysis.topics': 1, date: 1 }
       ).limit(100).sort({ date: -1 }).lean();
       
@@ -281,7 +287,7 @@ messageSchema.statics.getChatTopics = async function(chatId) {
       return formattedTopics;
     }
   } catch (error) {
-    console.error(`Error getting topics for chat ${chatId}:`, error);
+    console.error(`Error getting topics for chat ${normalizedChatId}:`, error);
     console.error('Stack trace:', error.stack);
     return []; // Return empty array instead of throwing error for more resilience
   }
@@ -527,12 +533,15 @@ messageSchema.statics.calculateQualityScore = function(message, analysis) {
 
 // Get chat leaderboard with quality-based point system
 messageSchema.statics.getChatLeaderboard = async function(chatId, limit = 10) {
+  // Normalize chatId to handle -100 prefixes consistently
+  const normalizedChatId = this.normalizeChatId(chatId);
+  
   try {
-    console.log(`Getting quality-based leaderboard for chat ${chatId}`);
+    console.log(`Getting quality-based leaderboard for chat ${normalizedChatId}`);
     
     // First check if we have any messages
-    const messageCount = await this.countDocuments({ chatId });
-    console.log(`Found ${messageCount} messages for chat ${chatId}`);
+    const messageCount = await this.countDocuments({ chatId: normalizedChatId });
+    console.log(`Found ${messageCount} messages for chat ${normalizedChatId}`);
     
     if (messageCount === 0) {
       return [];
@@ -540,7 +549,7 @@ messageSchema.statics.getChatLeaderboard = async function(chatId, limit = 10) {
     
     // Get users with highest quality points
     const leaderboard = await this.aggregate([
-      { $match: { chatId: chatId } },
+      { $match: { chatId: normalizedChatId } },
       {
         $group: {
           _id: {
@@ -597,12 +606,31 @@ messageSchema.statics.getChatLeaderboard = async function(chatId, limit = 10) {
       { $limit: limit }
     ]).exec();
     
-    console.log(`Leaderboard retrieved successfully for chat ${chatId}: ${leaderboard.length} users`);
+    console.log(`Leaderboard retrieved successfully for chat ${normalizedChatId}: ${leaderboard.length} users`);
     return leaderboard;
   } catch (error) {
-    console.error(`Error getting leaderboard for chat ${chatId}:`, error);
+    console.error(`Error getting leaderboard for chat ${normalizedChatId}:`, error);
     throw error;
   }
+};
+
+// Helper method to normalize chat IDs consistently
+messageSchema.statics.normalizeChatId = function(chatId) {
+  // Convert to string for easier manipulation
+  const chatIdStr = String(chatId);
+  
+  // For group IDs that come from the Telegram API, they might have -100 prefix
+  // We want to store and query with a consistent format
+  if (chatIdStr.startsWith('-100')) {
+    // Already in the full format, use as is
+    return chatIdStr;
+  } else if (chatIdStr.startsWith('-')) {
+    // Convert from -123456 format to -100123456 format
+    return `-100${chatIdStr.substring(1)}`;
+  }
+  
+  // For any other format, return as is
+  return chatIdStr;
 };
 
 module.exports = mongoose.model('Message', messageSchema); 

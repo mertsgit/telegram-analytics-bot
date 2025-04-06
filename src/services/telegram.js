@@ -729,8 +729,10 @@ _Use /topics for detailed topic analysis_`;
         // Get topics using the static method
         const topics = await Message.getChatTopics(chatId);
         
+        console.log(`Called Message.getChatTopics with groupId=${chatId} for callback query`);
+        
         if (!topics || topics.length === 0) {
-          return await ctx.reply('No topics have been identified in this chat yet. Send some messages first!');
+          return await ctx.reply(`No topics have been identified in ${ctx.chat.title} yet.`);
         }
         
         // Categorize topics
@@ -1448,6 +1450,8 @@ _Use /topics for detailed topic analysis_`;
               
               // Get topics using the static method
               const topics = await Message.getChatTopics(groupId);
+              
+              console.log(`Called Message.getChatTopics with groupId=${groupId} for callback query`);
               
               if (!topics || topics.length === 0) {
                 return await ctx.reply(`No topics have been identified in ${chatTitle} yet.`);
