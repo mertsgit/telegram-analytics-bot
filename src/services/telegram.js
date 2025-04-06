@@ -608,9 +608,20 @@ _You can use commands like /stats, /topics and /leaderboard in private chat with
           .filter(t => /bitcoin|btc|eth|ethereum|crypto|token|blockchain|solana|sol|nft|defi|trading|coin/i.test(t._id))
           .slice(0, 5);
         
+        // Get chat title
+        let chatTitle = "the selected group";
+        try {
+          const chatInfo = await bot.telegram.getChat(chatId);
+          chatTitle = chatInfo.title || "Unknown Group";
+          console.log(`Retrieved chat title for ${chatId}: "${chatTitle}"`);
+        } catch (chatError) {
+          console.error(`Error getting chat title: ${chatError.message}`);
+          // Continue with default title
+        }
+        
         // Build the stats message with focus on sentiment
         const statsMessage = `
-📊 *Sentiment Analysis for "${ctx.chat.title}"*
+📊 *Sentiment Analysis for "${chatTitle}"*
 
 *Sentiment Breakdown:*
 ${sentiments.map(s => `- ${s.charAt(0).toUpperCase() + s.slice(1)}: ${sentimentPercentages[s]}% (${sentimentData[s] || 0} messages)`).join('\n')}
@@ -1350,9 +1361,11 @@ ${leaderboardEntries}
         let chatTitle = "the selected group";
         try {
           const chatInfo = await bot.telegram.getChat(groupId);
-          chatTitle = chatInfo.title;
+          chatTitle = chatInfo.title || "Unknown Group";
+          console.log(`Retrieved chat title for ${groupId}: "${chatTitle}"`);
         } catch (chatError) {
-          console.error(`Error getting chat info: ${chatError.message}`);
+          console.error(`Error getting chat title: ${chatError.message}`);
+          // Continue with default title
         }
         
         // Execute the appropriate functionality based on command
