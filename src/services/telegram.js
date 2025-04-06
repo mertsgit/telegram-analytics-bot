@@ -283,6 +283,63 @@ const getGroupsForSelection = async (userId) => {
   return groupsWithInfo;
 };
 
+// Get groups where regular user is a member for display in private chat
+const getUserGroups = async (userId) => {
+  try {
+    console.log(`Getting groups where user ${userId} is a member`);
+    
+    const userGroups = [];
+    
+    // Check all allowed groups to see if the user is a member
+    for (const groupId of ALLOWED_GROUP_IDS) {
+      try {
+        // Format group ID with -100 prefix if needed
+        const formattedGroupId = groupId.toString().startsWith('-100') ? 
+          groupId.toString() : 
+          `-100${groupId.toString().substring(1)}`;
+        
+        console.log(`Checking membership in group ${formattedGroupId}`);
+        
+        try {
+          // Try to get chat member info - if this succeeds, user is a member
+          const chatMember = await bot.telegram.getChatMember(formattedGroupId, userId);
+          
+          // If we got a response and status isn't 'left' or 'kicked', they're a member
+          if (chatMember && chatMember.status !== 'left' && chatMember.status !== 'kicked') {
+            console.log(`User ${userId} is a member (${chatMember.status}) in group ${formattedGroupId}`);
+            
+            // Get group info for title
+            const chatInfo = await bot.telegram.getChat(formattedGroupId);
+            
+            userGroups.push({
+              id: formattedGroupId,
+              originalId: groupId,
+              title: chatInfo.title || 'Unknown Group',
+              role: chatMember.status
+            });
+          }
+        } catch (chatMemberError) {
+          if (chatMemberError.message.includes('user not found')) {
+            console.log(`User ${userId} is not a member of group ${formattedGroupId}`);
+          } else {
+            console.error(`Error checking membership in group ${formattedGroupId}: ${chatMemberError.message}`);
+          }
+          // Continue checking other groups
+        }
+      } catch (groupError) {
+        console.error(`Error processing group ${groupId}: ${groupError.message}`);
+        // Continue checking other groups
+      }
+    }
+    
+    console.log(`Found ${userGroups.length} groups for user ${userId}`);
+    return userGroups;
+  } catch (error) {
+    console.error(`Error getting user groups: ${error.message}`);
+    return null;
+  }
+};
+
 // Initialize bot with commands and message handlers
 const initBot = async () => {
   try {
@@ -352,7 +409,7 @@ Just use any command, and I'll ask you which group you want to view information 
             await ctx.reply(message);
           } else {
             // Regular user gets standard message
-            await ctx.reply('Hello! I track and analyze messages in authorized groups. Use /help to see commands.');
+            await ctx.reply('Hello! I track and analyze messages in authorized groups. Use /help to see commands. You can also use the /leaderboard command in this private chat to check the leaderboard of groups you are a member of.');
           }
         } else {
           // Group chat check
@@ -423,7 +480,8 @@ ${isOwner ? "As the bot owner, you have full access to all commands and all grou
             '/topics - Show categorized topics in this chat\n' +
             '/leaderboard - Show top users ranked by quality score\n' +
             '/health - Check bot service health\n' +
-            '/price <coin> - Check current price of a cryptocurrency'
+            '/price <coin> - Check current price of a cryptocurrency\n\n' +
+            'Note: Regular members can also use /leaderboard in private chat with the bot to check leaderboards of groups they belong to.'
           );
         }
       } catch (error) {
@@ -917,56 +975,49 @@ _Data from CoinGecko_
       }
     });
 
-    // Add leaderboard command (Allowed groups only)
+    // Handle leaderboard command (Allowed groups only)
     bot.command('leaderboard', async (ctx) => {
       try {
         console.log(`Leaderboard command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'}) by user ${ctx.from.id}`);
         
-        // Private chat handling for group admins
+        // Private chat handling for any user
         if (ctx.chat.type === 'private') {
           console.log(`Leaderboard command in private chat from user ${ctx.from.id}`);
           const isOwner = ctx.from.id === OWNER_ID;
           
-          if (!isOwner) {
-            // Check if user is admin in any allowed groups
-            const selectedGroupId = await promptGroupSelection(ctx, ctx.from.id, 'leaderboard');
-            
-            if (!selectedGroupId) {
-              // Selection is pending or user has no authorized groups
-              return;
-            }
-            
-            // Override chat context with the selected group
-            ctx.chat.id = selectedGroupId;
-            // Store original chat type to help with checks later
-            ctx.originalChatType = 'private';
-            console.log(`Selected group for leaderboard: ${selectedGroupId}`);
-          } else {
-            // For owner, prompt to select a group
-            const groups = await Promise.all(ALLOWED_GROUP_IDS.map(async (groupId) => {
-              try {
-                // Format group ID with -100 prefix if needed
-                const formattedGroupId = groupId.toString().startsWith('-100') ? 
-                  groupId.toString() : 
-                  `-100${groupId.toString().substring(1)}`;
-                
-                const chatInfo = await bot.telegram.getChat(formattedGroupId);
-                return {
-                  id: formattedGroupId,
-                  originalId: groupId,
-                  role: 'owner',
-                  title: chatInfo.title || 'Unknown Group'
-                };
-              } catch (error) {
-                console.error(`Error getting group info for ${groupId}: ${error.message}`);
-                return {
-                  id: formattedGroupId,
-                  originalId: groupId,
-                  role: 'owner',
-                  title: 'Unknown Group'
-                };
-              }
-            }));
+          // Get groups where the user is admin
+          const adminGroups = await isGroupAdmin(ctx.from.id);
+          
+          if (isOwner || adminGroups) {
+            // Owner or admin gets to select from all allowed groups or their admin groups
+            const groups = isOwner ? 
+              // For owner, get all groups
+              await Promise.all(ALLOWED_GROUP_IDS.map(async (groupId) => {
+                try {
+                  // Format group ID with -100 prefix if needed
+                  const formattedGroupId = groupId.toString().startsWith('-100') ? 
+                    groupId.toString() : 
+                    `-100${groupId.toString().substring(1)}`;
+                  
+                  const chatInfo = await bot.telegram.getChat(formattedGroupId);
+                  return {
+                    id: formattedGroupId,
+                    originalId: groupId,
+                    role: 'owner',
+                    title: chatInfo.title || 'Unknown Group'
+                  };
+                } catch (error) {
+                  console.error(`Error getting group info for ${groupId}: ${error.message}`);
+                  return {
+                    id: formattedGroupId,
+                    originalId: groupId,
+                    role: 'owner',
+                    title: 'Unknown Group'
+                  };
+                }
+              })) :
+              // For admins, get their admin groups
+              await getGroupsForSelection(ctx.from.id);
             
             // Create message with group selection buttons
             let message = 'Please select a group to view leaderboard for:';
@@ -974,6 +1025,27 @@ _Data from CoinGecko_
             
             await ctx.reply(message, options);
             return;
+          } else {
+            // Regular user - check if they are a member of any allowed groups
+            const userGroups = await getUserGroups(ctx.from.id);
+            
+            if (!userGroups || userGroups.length === 0) {
+              return await ctx.reply('You are not a member of any groups that use this bot.');
+            }
+            
+            // If they are in exactly one group, select it automatically
+            if (userGroups.length === 1) {
+              ctx.chat.id = userGroups[0].id;
+              ctx.originalChatType = 'private';
+              console.log(`Auto-selected only available group for user ${ctx.from.id}: ${userGroups[0].id} (${userGroups[0].title})`);
+            } else {
+              // Let them select from groups they're a member of
+              let message = 'Please select a group to view leaderboard for:';
+              const options = createGroupSelectionKeyboard(userGroups, 'leaderboard');
+              
+              await ctx.reply(message, options);
+              return;
+            }
           }
         }
         
