@@ -809,22 +809,134 @@ _Use /topics for detailed topic analysis_`;
           }
         });
         
-        // Build message with categories
-        let topicsMessage = `📋 *Topics in "${ctx.chat.title}"*\n\n`;
+        // Helper function to format sentiment emoji
+        const getSentimentEmoji = (sentiment) => {
+          switch(sentiment) {
+            case 'positive': return '😀';
+            case 'negative': return '😟';
+            case 'neutral': return '😐';
+            default: return '🔄';
+          }
+        };
+        
+        // Helper function to format trending indicator
+        const getTrendingEmoji = (trending) => {
+          switch(trending) {
+            case 'up': return '📈';
+            case 'down': return '📉';
+            default: return '➖';
+          }
+        };
+        
+        // Helper function to escape markdown
+        const escapeTopicMarkdown = (text) => {
+          if (!text) return '';
+          return text.toString().replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
+        };
+        
+        // Build message with categories and enhanced analysis
+        let topicsMessage = `📊 *Advanced Topic Analysis for "${escapeTopicMarkdown(ctx.chat.title)}"*\n\n`;
+        
+        // Find total topic mentions for percentages
+        const totalMentions = topics.reduce((sum, topic) => sum + topic.count, 0);
         
         for (const category of Object.values(categories)) {
           if (category.topics.length > 0) {
-            topicsMessage += `*${category.name}:*\n`;
-            category.topics.slice(0, 5).forEach((t, i) => {
-              const lastMentioned = new Date(t.lastMentioned).toLocaleDateString();
-              topicsMessage += `${i+1}. *${t._id}*: ${t.count} mentions (Last: ${lastMentioned})\n`;
+            // Get most discussed topic in this category
+            const mostDiscussed = [...category.topics].sort((a, b) => b.count - a.count)[0];
+            
+            topicsMessage += `*${category.name}*`;
+            
+            if (mostDiscussed.trending === 'up') {
+              topicsMessage += ` 🔥 Trending!`;
+            }
+            
+            topicsMessage += `\n`;
+            
+            // Format each topic with enhanced details
+            category.topics.slice(0, 3).forEach((topic, i) => {
+              const lastMentioned = new Date(topic.lastMentioned).toLocaleDateString();
+              const percentage = Math.round((topic.count / totalMentions) * 100);
+              
+              // Topic header with stats
+              topicsMessage += `${i+1}. *${escapeTopicMarkdown(topic._id)}* ${getTrendingEmoji(topic.trending)}\n`;
+              topicsMessage += `   • Mentions: ${topic.count} (${percentage}% of all topics)\n`;
+              
+              // Only show these fields if they exist (enhanced analysis)
+              if (topic.uniqueUserCount) {
+                topicsMessage += `   • Discussed by: ${topic.uniqueUserCount} members\n`;
+              }
+              
+              if (topic.dominantSentiment) {
+                topicsMessage += `   • Sentiment: ${getSentimentEmoji(topic.dominantSentiment)} ${topic.dominantSentiment}\n`;
+              }
+              
+              // Show related topics if available
+              if (topic.relatedTopics && topic.relatedTopics.length > 0) {
+                const relatedTopicsList = topic.relatedTopics
+                  .map(rt => escapeTopicMarkdown(rt.topic))
+                  .join(', ');
+                topicsMessage += `   • Related to: ${relatedTopicsList}\n`;
+              }
+              
+              // Add a sample message if available
+              if (topic.sampleMessages && topic.sampleMessages.length > 0) {
+                const sampleMsg = topic.sampleMessages[0];
+                topicsMessage += `   • Example: "_${escapeTopicMarkdown(sampleMsg.text.substring(0, 60))}..._"\n`;
+              }
+              
+              // Add activity info
+              if (topic.daysActive && topic.messagesPerDay) {
+                topicsMessage += `   • Activity: ${topic.messagesPerDay} msgs/day over ${topic.daysActive} days\n`;
+              } else {
+                topicsMessage += `   • Last mentioned: ${lastMentioned}\n`;
+              }
+              
+              topicsMessage += '\n';
             });
+            
+            // If there are more topics in this category, mention them
+            if (category.topics.length > 3) {
+              const additionalCount = category.topics.length - 3;
+              const additionalTopics = category.topics
+                .slice(3, 6)
+                .map(t => escapeTopicMarkdown(t._id))
+                .join(', ');
+              
+              topicsMessage += `_...and ${additionalCount} more topics including ${additionalTopics}${additionalCount > 3 ? '...' : ''}_\n`;
+            }
+            
             topicsMessage += '\n';
           }
         }
         
-        topicsMessage += '_Topics are identified from messages sent after the bot was added to the group._\n_Use /stats for sentiment analysis_';
+        // Add insights summary
+        topicsMessage += `*AI Insights:*\n`;
+        if (topics.some(t => t.trending === 'up')) {
+          const trendingTopics = topics
+            .filter(t => t.trending === 'up')
+            .map(t => escapeTopicMarkdown(t._id))
+            .slice(0, 3)
+            .join(', ');
+          
+          topicsMessage += `• Trending discussions: ${trendingTopics}\n`;
+        }
         
+        // Add sentiment overview
+        const positiveSentimentTopics = topics.filter(t => t.dominantSentiment === 'positive').length;
+        const negativeSentimentTopics = topics.filter(t => t.dominantSentiment === 'negative').length;
+        
+        if (positiveSentimentTopics > negativeSentimentTopics) {
+          topicsMessage += `• Overall positive discussions dominate ${positiveSentimentTopics} topics\n`;
+        } else if (negativeSentimentTopics > positiveSentimentTopics) {
+          topicsMessage += `• Several topics (${negativeSentimentTopics}) show negative sentiment\n`;
+        } else {
+          topicsMessage += `• Topics show balanced sentiment overall\n`;
+        }
+        
+        topicsMessage += `\n_Analysis based on ${totalMentions} topic mentions across ${topics.length} unique topics_`;
+        
+        // Send message with enhanced topic analysis
         await ctx.reply(topicsMessage, { parse_mode: 'Markdown' });
       } catch (error) {
         console.error(`Error in topics command for chat ${ctx.chat.id}:`, error);
@@ -1591,22 +1703,134 @@ _Use /topics for detailed topic analysis_`;
                 }
               });
               
-              // Build message with categories
-              let topicsMessage = `📋 *Topics in "${chatTitle}"*\n\n`;
+              // Helper function to format sentiment emoji
+              const getSentimentEmoji = (sentiment) => {
+                switch(sentiment) {
+                  case 'positive': return '😀';
+                  case 'negative': return '😟';
+                  case 'neutral': return '😐';
+                  default: return '🔄';
+                }
+              };
+              
+              // Helper function to format trending indicator
+              const getTrendingEmoji = (trending) => {
+                switch(trending) {
+                  case 'up': return '📈';
+                  case 'down': return '📉';
+                  default: return '➖';
+                }
+              };
+              
+              // Helper function to escape markdown
+              const escapeTopicMarkdown = (text) => {
+                if (!text) return '';
+                return text.toString().replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
+              };
+              
+              // Build message with categories and enhanced analysis
+              let topicsMessage = `📊 *Advanced Topic Analysis for "${escapeTopicMarkdown(chatTitle)}"*\n\n`;
+              
+              // Find total topic mentions for percentages
+              const totalMentions = topics.reduce((sum, topic) => sum + topic.count, 0);
               
               for (const category of Object.values(categories)) {
                 if (category.topics.length > 0) {
-                  topicsMessage += `*${category.name}:*\n`;
-                  category.topics.slice(0, 5).forEach((t, i) => {
-                    const lastMentioned = new Date(t.lastMentioned).toLocaleDateString();
-                    topicsMessage += `${i+1}. *${t._id}*: ${t.count} mentions (Last: ${lastMentioned})\n`;
+                  // Get most discussed topic in this category
+                  const mostDiscussed = [...category.topics].sort((a, b) => b.count - a.count)[0];
+                  
+                  topicsMessage += `*${category.name}*`;
+                  
+                  if (mostDiscussed.trending === 'up') {
+                    topicsMessage += ` 🔥 Trending!`;
+                  }
+                  
+                  topicsMessage += `\n`;
+                  
+                  // Format each topic with enhanced details
+                  category.topics.slice(0, 3).forEach((topic, i) => {
+                    const lastMentioned = new Date(topic.lastMentioned).toLocaleDateString();
+                    const percentage = Math.round((topic.count / totalMentions) * 100);
+                    
+                    // Topic header with stats
+                    topicsMessage += `${i+1}. *${escapeTopicMarkdown(topic._id)}* ${getTrendingEmoji(topic.trending)}\n`;
+                    topicsMessage += `   • Mentions: ${topic.count} (${percentage}% of all topics)\n`;
+                    
+                    // Only show these fields if they exist (enhanced analysis)
+                    if (topic.uniqueUserCount) {
+                      topicsMessage += `   • Discussed by: ${topic.uniqueUserCount} members\n`;
+                    }
+                    
+                    if (topic.dominantSentiment) {
+                      topicsMessage += `   • Sentiment: ${getSentimentEmoji(topic.dominantSentiment)} ${topic.dominantSentiment}\n`;
+                    }
+                    
+                    // Show related topics if available
+                    if (topic.relatedTopics && topic.relatedTopics.length > 0) {
+                      const relatedTopicsList = topic.relatedTopics
+                        .map(rt => escapeTopicMarkdown(rt.topic))
+                        .join(', ');
+                      topicsMessage += `   • Related to: ${relatedTopicsList}\n`;
+                    }
+                    
+                    // Add a sample message if available
+                    if (topic.sampleMessages && topic.sampleMessages.length > 0) {
+                      const sampleMsg = topic.sampleMessages[0];
+                      topicsMessage += `   • Example: "_${escapeTopicMarkdown(sampleMsg.text.substring(0, 60))}..._"\n`;
+                    }
+                    
+                    // Add activity info
+                    if (topic.daysActive && topic.messagesPerDay) {
+                      topicsMessage += `   • Activity: ${topic.messagesPerDay} msgs/day over ${topic.daysActive} days\n`;
+                    } else {
+                      topicsMessage += `   • Last mentioned: ${lastMentioned}\n`;
+                    }
+                    
+                    topicsMessage += '\n';
                   });
+                  
+                  // If there are more topics in this category, mention them
+                  if (category.topics.length > 3) {
+                    const additionalCount = category.topics.length - 3;
+                    const additionalTopics = category.topics
+                      .slice(3, 6)
+                      .map(t => escapeTopicMarkdown(t._id))
+                      .join(', ');
+                    
+                    topicsMessage += `_...and ${additionalCount} more topics including ${additionalTopics}${additionalCount > 3 ? '...' : ''}_\n`;
+                  }
+                  
                   topicsMessage += '\n';
                 }
               }
               
-              topicsMessage += '_Topics are identified from messages sent after the bot was added to the group._\n_Use /stats for sentiment analysis_';
+              // Add insights summary
+              topicsMessage += `*AI Insights:*\n`;
+              if (topics.some(t => t.trending === 'up')) {
+                const trendingTopics = topics
+                  .filter(t => t.trending === 'up')
+                  .map(t => escapeTopicMarkdown(t._id))
+                  .slice(0, 3)
+                  .join(', ');
+                
+                topicsMessage += `• Trending discussions: ${trendingTopics}\n`;
+              }
               
+              // Add sentiment overview
+              const positiveSentimentTopics = topics.filter(t => t.dominantSentiment === 'positive').length;
+              const negativeSentimentTopics = topics.filter(t => t.dominantSentiment === 'negative').length;
+              
+              if (positiveSentimentTopics > negativeSentimentTopics) {
+                topicsMessage += `• Overall positive discussions dominate ${positiveSentimentTopics} topics\n`;
+              } else if (negativeSentimentTopics > positiveSentimentTopics) {
+                topicsMessage += `• Several topics (${negativeSentimentTopics}) show negative sentiment\n`;
+              } else {
+                topicsMessage += `• Topics show balanced sentiment overall\n`;
+              }
+              
+              topicsMessage += `\n_Analysis based on ${totalMentions} topic mentions across ${topics.length} unique topics_`;
+              
+              // Send message with enhanced topic analysis
               await ctx.reply(topicsMessage, { parse_mode: 'Markdown' });
             } catch (error) {
               console.error(`Error executing topics command: ${error.message}`);

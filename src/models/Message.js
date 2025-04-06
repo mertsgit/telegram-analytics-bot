@@ -207,7 +207,7 @@ messageSchema.statics.getChatStats = async function(chatId) {
 
 messageSchema.statics.getChatTopics = async function(chatId) {
   try {
-    console.log(`Getting topics for chat ${chatId}`);
+    console.log(`Getting enhanced topics for chat ${chatId}`);
     
     // Normalize the chat ID to handle both formats
     const normalizedIds = normalizeChatId(chatId);
@@ -233,9 +233,137 @@ messageSchema.statics.getChatTopics = async function(chatId) {
       return [];
     }
 
-    // Extract and count topic occurrences with safer approach
+    // Extract and count topic occurrences with enhanced analysis
     try {
+      // First get the basic topic data
       const topics = await this.aggregate([
+        {
+          $match: {
+            chatId: { $in: normalizedIds },
+            'analysis.topics': { $exists: true, $ne: [] }
+          }
+        },
+        { $unwind: { path: "$analysis.topics", preserveNullAndEmptyArrays: false } },
+        {
+          $group: {
+            _id: "$analysis.topics",
+            count: { $sum: 1 },
+            lastMentioned: { $max: "$date" },
+            firstMentioned: { $min: "$date" },
+            // Track messages for this topic
+            messageIds: { $push: "$_id" },
+            // Count unique users discussing this topic
+            uniqueUsers: { $addToSet: "$userId" }
+          }
+        },
+        // Filter out empty topics or those with special characters only
+        {
+          $match: {
+            _id: { $regex: /[a-zA-Z0-9]/, $ne: "" }
+          }
+        },
+        { $sort: { count: -1 } },
+        { $limit: 15 }
+      ]).exec();
+
+      // For each topic, get additional data like sentiment distribution and sample messages
+      const enhancedTopics = await Promise.all(topics.map(async (topic) => {
+        // Get sentiment distribution for this topic
+        const sentimentDistribution = await this.aggregate([
+          {
+            $match: {
+              chatId: { $in: normalizedIds },
+              'analysis.topics': topic._id,
+              'analysis.sentiment': { $exists: true, $ne: null }
+            }
+          },
+          {
+            $group: {
+              _id: "$analysis.sentiment",
+              count: { $sum: 1 }
+            }
+          }
+        ]).exec();
+        
+        // Get sample messages for this topic (for context)
+        const sampleMessages = await this.find(
+          { chatId: { $in: normalizedIds }, 'analysis.topics': topic._id },
+          { text: 1, date: 1, analysis: 1, username: 1, firstName: 1 }
+        ).sort({ date: -1 }).limit(3).lean();
+        
+        // Get related topics (topics that co-occur with this one)
+        const relatedTopics = await this.aggregate([
+          {
+            $match: {
+              chatId: { $in: normalizedIds },
+              'analysis.topics': topic._id,
+              'analysis.topics.1': { $exists: true } // At least 2 topics
+            }
+          },
+          { $unwind: { path: "$analysis.topics" } },
+          {
+            $match: {
+              'analysis.topics': { $ne: topic._id } // Exclude the main topic
+            }
+          },
+          {
+            $group: {
+              _id: "$analysis.topics",
+              count: { $sum: 1 }
+            }
+          },
+          { $sort: { count: -1 } },
+          { $limit: 3 }
+        ]).exec();
+        
+        // Calculate growth trend
+        const firstDate = new Date(topic.firstMentioned);
+        const lastDate = new Date(topic.lastMentioned);
+        const daysDiff = Math.max(1, Math.floor((lastDate - firstDate) / (1000 * 60 * 60 * 24)));
+        const messagesPerDay = topic.count / daysDiff;
+        
+        // Determine dominant sentiment
+        let dominantSentiment = 'neutral';
+        let highestCount = 0;
+        sentimentDistribution.forEach(sentiment => {
+          if (sentiment.count > highestCount) {
+            highestCount = sentiment.count;
+            dominantSentiment = sentiment._id;
+          }
+        });
+        
+        // Format results
+        return {
+          ...topic,
+          sentiments: sentimentDistribution.reduce((acc, sentiment) => {
+            acc[sentiment._id] = sentiment.count;
+            return acc;
+          }, {}),
+          dominantSentiment,
+          uniqueUserCount: topic.uniqueUsers.length,
+          daysActive: daysDiff,
+          messagesPerDay: parseFloat(messagesPerDay.toFixed(1)),
+          sampleMessages: sampleMessages.map(m => ({
+            text: m.text.substring(0, 100) + (m.text.length > 100 ? '...' : ''),
+            date: m.date,
+            sentiment: m.analysis.sentiment,
+            author: m.username || `${m.firstName || 'User'}`
+          })),
+          relatedTopics: relatedTopics.map(rt => ({
+            topic: rt._id,
+            coOccurrences: rt.count
+          })),
+          trending: messagesPerDay > 0.5 ? 'up' : 'stable' // Simple trending metric
+        };
+      }));
+
+      console.log(`Enhanced topics retrieved successfully for chat ${chatId}: ${enhancedTopics.length} topics found`);
+      return enhancedTopics;
+    } catch (aggregationError) {
+      console.error(`Error during enhanced topic aggregation for chat ${chatId}:`, aggregationError);
+      
+      // Fallback to original simpler method if the enhanced analysis fails
+      const simpleTopics = await this.aggregate([
         {
           $match: {
             chatId: { $in: normalizedIds },
@@ -259,50 +387,9 @@ messageSchema.statics.getChatTopics = async function(chatId) {
         { $sort: { count: -1 } },
         { $limit: 15 }
       ]).exec();
-
-      console.log(`Topics retrieved successfully for chat ${chatId}: ${topics.length} topics found`);
-      return topics;
-    } catch (aggregationError) {
-      console.error(`Error during topic aggregation for chat ${chatId}:`, aggregationError);
       
-      // Fallback to simpler approach if the aggregation fails
-      console.log(`Using fallback topic extraction for chat ${chatId}`);
-      const messages = await this.find(
-        { chatId, 'analysis.topics': { $exists: true, $ne: [] } },
-        { 'analysis.topics': 1, date: 1 }
-      ).limit(100).sort({ date: -1 }).lean();
-      
-      // Manual topic counting
-      const topicCounts = {};
-      const lastMentioned = {};
-      
-      messages.forEach(msg => {
-        if (Array.isArray(msg.analysis.topics)) {
-          msg.analysis.topics.forEach(topic => {
-            if (topic && /[a-zA-Z0-9]/.test(topic)) {
-              topicCounts[topic] = (topicCounts[topic] || 0) + 1;
-              
-              // Track most recent mention
-              if (!lastMentioned[topic] || msg.date > lastMentioned[topic]) {
-                lastMentioned[topic] = msg.date;
-              }
-            }
-          });
-        }
-      });
-      
-      // Convert to expected format
-      const formattedTopics = Object.entries(topicCounts)
-        .map(([topic, count]) => ({
-          _id: topic,
-          count,
-          lastMentioned: lastMentioned[topic]
-        }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 15);
-      
-      console.log(`Fallback topic extraction successful: ${formattedTopics.length} topics found`);
-      return formattedTopics;
+      console.log(`Fallback to simple topics: ${simpleTopics.length} topics found`);
+      return simpleTopics;
     }
   } catch (error) {
     console.error(`Error getting topics for chat ${chatId}:`, error);
