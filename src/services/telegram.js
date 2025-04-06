@@ -1304,13 +1304,21 @@ ${leaderboardEntries}
       try {
         const userId = ctx.from.id;
         const callbackData = ctx.callbackQuery.data;
-        console.log(`Received callback query from user ${userId}: ${callbackData}`);
+        const callbackId = ctx.callbackQuery.id; // Extract callback ID
+        
+        console.log(`Received callback query from user ${userId}: ${callbackData} (ID: ${callbackId})`);
         
         // Parse callback data: command:groupId
         const [command, groupId] = callbackData.split(':');
         
         if (!groupId) {
-          await ctx.answerCallbackQuery('Invalid selection');
+          try {
+            if (callbackId) {
+              await ctx.telegram.answerCbQuery(callbackId, 'Invalid selection');
+            }
+          } catch (cbError) {
+            console.error(`Error answering callback query: ${cbError.message}`);
+          }
           return;
         }
         
@@ -1319,7 +1327,14 @@ ${leaderboardEntries}
         console.log(`User ${userId} selected group ${groupId} for ${command}`);
         
         // Answer the callback query to stop loading animation
-        await ctx.answerCallbackQuery(`Selected group for ${command}`);
+        try {
+          if (callbackId) {
+            await ctx.telegram.answerCbQuery(callbackId, `Selected group for ${command}`);
+          }
+        } catch (cbError) {
+          console.error(`Error answering callback query: ${cbError.message}`);
+          // Continue despite error
+        }
         
         try {
           // Delete the selection message before proceeding
@@ -1678,7 +1693,12 @@ _Data from CoinGecko_
       } catch (error) {
         console.error(`Error handling callback query: ${error.message}`);
         try {
-          await ctx.answerCallbackQuery('An error occurred');
+          // Try to answer the callback query if possible
+          if (ctx.callbackQuery && ctx.callbackQuery.id) {
+            await ctx.telegram.answerCbQuery(ctx.callbackQuery.id, 'An error occurred');
+          }
+          
+          // Try to send an error message
           await ctx.reply('Sorry, there was an error processing your selection. Please try again.');
         } catch (replyError) {
           console.error(`Error replying to callback query: ${replyError.message}`);
