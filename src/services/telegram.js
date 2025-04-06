@@ -1321,49 +1321,355 @@ ${leaderboardEntries}
         // Answer the callback query to stop loading animation
         await ctx.answerCallbackQuery(`Selected group for ${command}`);
         
-        // Create a fake context simulating a command in the selected group
-        const fakeContext = {
-          ...ctx,
-          chat: {
-            id: groupId,
-            type: 'supergroup'
-          },
-          // Store the original chat type to know this came from a private chat
-          originalChatType: 'private'
-        };
+        try {
+          // Delete the selection message before proceeding
+          await ctx.deleteMessage();
+        } catch (deleteError) {
+          console.error(`Error deleting selection message: ${deleteError.message}`);
+          // Continue despite error
+        }
         
-        // Execute the command based on what was selected
+        // Get chat info to display proper title
+        let chatTitle = "the selected group";
+        try {
+          const chatInfo = await bot.telegram.getChat(groupId);
+          chatTitle = chatInfo.title;
+        } catch (chatError) {
+          console.error(`Error getting chat info: ${chatError.message}`);
+        }
+        
+        // Execute the appropriate functionality based on command
+        // Instead of re-running the command, directly execute the needed code
         switch (command) {
           case 'stats':
-            // Delete the selection message
-            await ctx.deleteMessage();
-            // Re-run the stats command with the selected group
-            await bot.handleCommand('stats')(fakeContext);
+            try {
+              console.log(`Directly executing stats for group ${groupId}`);
+              
+              // Check if database is connected
+              if (!isDBConnected()) {
+                return await ctx.reply('⚠️ Database connection is unavailable. Stats cannot be retrieved at this time.');
+              }
+              
+              // Use the static method to get chat stats
+              const stats = await Message.getChatStats(groupId);
+              
+              if (!stats || stats.totalMessages === 0) {
+                return await ctx.reply(`No messages have been tracked in ${chatTitle} yet.`);
+              }
+              
+              // Format sentiment data for visualization
+              const sentimentData = {
+                positive: 0,
+                negative: 0,
+                neutral: 0,
+                unknown: 0
+              };
+              
+              stats.sentiments.forEach(s => {
+                if (s._id in sentimentData) {
+                  sentimentData[s._id] = s.count;
+                }
+              });
+              
+              const totalSentiment = Object.values(sentimentData).reduce((a, b) => a + b, 0);
+              const sentimentPercentages = {};
+              for (const [key, value] of Object.entries(sentimentData)) {
+                sentimentPercentages[key] = totalSentiment > 0 ? Math.round((value / totalSentiment) * 100) : 0;
+              }
+              
+              // Determine overall sentiment tone
+              let overallTone = "neutral";
+              if (sentimentPercentages.positive > sentimentPercentages.negative && 
+                  sentimentPercentages.positive > sentimentPercentages.neutral) {
+                overallTone = "positive";
+              } else if (sentimentPercentages.negative > sentimentPercentages.positive && 
+                        sentimentPercentages.negative > sentimentPercentages.neutral) {
+                overallTone = "negative";
+              }
+              
+              // Format sentiment numbers
+              const sentiments = ['positive', 'negative', 'neutral'];
+              
+              // Check for crypto-related topics
+              const cryptoTopics = stats.topics
+                .filter(t => /bitcoin|btc|eth|ethereum|crypto|token|blockchain|solana|sol|nft|defi|trading|coin/i.test(t._id))
+                .slice(0, 5);
+              
+              // Build the stats message with focus on sentiment
+              const statsMessage = `
+📊 *Sentiment Analysis for "${chatTitle}"*
+
+*Sentiment Breakdown:*
+${sentiments.map(s => `- ${s.charAt(0).toUpperCase() + s.slice(1)}: ${sentimentPercentages[s]}% (${sentimentData[s] || 0} messages)`).join('\n')}
+
+*Overall sentiment:* The group has a predominantly ${overallTone} tone (${sentimentPercentages[overallTone]}%)
+
+*Chat Activity:*
+- Total messages: ${stats.totalMessages}
+- Active users: ${stats.uniqueUsers}
+- Messages per user: ${stats.uniqueUsers ? Math.round(stats.totalMessages / stats.uniqueUsers * 10) / 10 : 0}
+- Analysis period: Last ${Math.min(stats.totalMessages, 1000)} messages
+
+${cryptoTopics.length > 0 ? `*Crypto Topics:*
+${cryptoTopics.map((t, i) => `${i+1}. ${t._id}: ${t.count} mentions (${Math.round(t.count/stats.totalMessages*100)}% of messages)`).join('\n')}` : ''}
+
+_Use /topics for detailed topic analysis_`;
+              
+              await ctx.reply(statsMessage, { parse_mode: 'Markdown' });
+            } catch (error) {
+              console.error(`Error executing stats command: ${error.message}`);
+              await ctx.reply('Sorry, there was an error generating statistics.');
+            }
             break;
             
           case 'topics':
-            await ctx.deleteMessage();
-            await bot.handleCommand('topics')(fakeContext);
+            try {
+              console.log(`Directly executing topics for group ${groupId}`);
+              
+              // Check if database is connected
+              if (!isDBConnected()) {
+                return await ctx.reply('⚠️ Database connection is unavailable. Topics cannot be retrieved at this time.');
+              }
+              
+              // Get topics using the static method
+              const topics = await Message.getChatTopics(groupId);
+              
+              if (!topics || topics.length === 0) {
+                return await ctx.reply(`No topics have been identified in ${chatTitle} yet.`);
+              }
+              
+              // Categorize topics
+              const categories = {
+                crypto: {
+                  name: "💰 Cryptocurrency",
+                  topics: [],
+                  regex: /bitcoin|btc|eth|ethereum|crypto|token|blockchain|solana|sol|nft|defi|trading|coin|market|price|bull|bear|wallet|exchange|dex|binance|chainlink|link|cardano|ada|xrp|usdt|usdc|stablecoin/i
+                },
+                technology: {
+                  name: "💻 Technology",
+                  topics: [],
+                  regex: /tech|software|hardware|web|app|code|developer|programming|ai|computer|internet|mobile|website|digital|online|device|gadget|electronics/i
+                },
+                finance: {
+                  name: "📈 Finance/Markets",
+                  topics: [],
+                  regex: /stock|finance|market|investing|investment|fund|bank|money|profit|loss|trader|trading|chart|analysis|buy|sell|portfolio|asset|dividend/i
+                },
+                general: {
+                  name: "🔍 General Topics",
+                  topics: []
+                }
+              };
+              
+              // Categorize each topic
+              topics.forEach(topic => {
+                let categorized = false;
+                for (const [key, category] of Object.entries(categories)) {
+                  if (key !== 'general' && category.regex && category.regex.test(topic._id)) {
+                    category.topics.push(topic);
+                    categorized = true;
+                    break;
+                  }
+                }
+                if (!categorized) {
+                  categories.general.topics.push(topic);
+                }
+              });
+              
+              // Build message with categories
+              let topicsMessage = `📋 *Topics in "${chatTitle}"*\n\n`;
+              
+              for (const category of Object.values(categories)) {
+                if (category.topics.length > 0) {
+                  topicsMessage += `*${category.name}:*\n`;
+                  category.topics.slice(0, 5).forEach((t, i) => {
+                    const lastMentioned = new Date(t.lastMentioned).toLocaleDateString();
+                    topicsMessage += `${i+1}. *${t._id}*: ${t.count} mentions (Last: ${lastMentioned})\n`;
+                  });
+                  topicsMessage += '\n';
+                }
+              }
+              
+              topicsMessage += '_Topics are identified from messages sent after the bot was added to the group._\n_Use /stats for sentiment analysis_';
+              
+              await ctx.reply(topicsMessage, { parse_mode: 'Markdown' });
+            } catch (error) {
+              console.error(`Error executing topics command: ${error.message}`);
+              await ctx.reply('Sorry, there was an error generating the topics list.');
+            }
             break;
             
           case 'leaderboard':
-            await ctx.deleteMessage();
-            await bot.handleCommand('leaderboard')(fakeContext);
+            try {
+              console.log(`Directly executing leaderboard for group ${groupId}`);
+              
+              // Check if database is connected
+              if (!isDBConnected()) {
+                return await ctx.reply('⚠️ Database connection is unavailable. Leaderboard cannot be retrieved at this time.');
+              }
+              
+              // Send a processing message
+              let processingMsg;
+              try {
+                processingMsg = await ctx.reply('⏳ Processing quality scores and creating leaderboard...');
+              } catch (msgError) {
+                console.error(`Error sending processing message: ${msgError.message}`);
+                processingMsg = null;
+              }
+              
+              // Get leaderboard data
+              const leaderboard = await Message.getChatLeaderboard(groupId, 10);
+              
+              if (!leaderboard || leaderboard.length === 0) {
+                if (processingMsg) {
+                  try {
+                    await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+                  } catch (deleteError) {
+                    console.error(`Error deleting processing message: ${deleteError.message}`);
+                  }
+                }
+                return await ctx.reply(`No messages have been tracked in ${chatTitle} yet.`);
+              }
+              
+              // Helper function to escape special HTML characters
+              const escapeHTML = (text) => {
+                if (!text) return '';
+                return text.toString()
+                  .replace(/&/g, '&amp;')
+                  .replace(/</g, '&lt;')
+                  .replace(/>/g, '&gt;');
+              };
+              
+              // Format user names with safer access
+              const formatUserName = (user) => {
+                try {
+                  if (user && user._id) {
+                    if (user._id.username) {
+                      return `@${escapeHTML(user._id.username)}`;
+                    } else {
+                      const firstName = user._id.firstName || '';
+                      const lastName = user._id.lastName || '';
+                      return escapeHTML(`${firstName} ${lastName}`.trim() || `User ${user._id.userId || 'unknown'}`);
+                    }
+                  }
+                  return 'Unknown User';
+                } catch (error) {
+                  console.error('Error formatting user name:', error);
+                  return 'Unknown User';
+                }
+              };
+              
+              // Create leaderboard entries one by one, safely
+              let leaderboardEntries = '';
+              for (let index = 0; index < leaderboard.length; index++) {
+                try {
+                  const user = leaderboard[index];
+                  let prefix = `${index + 1}.`;
+                  if (index === 0) prefix = '🥇';
+                  if (index === 1) prefix = '🥈';
+                  if (index === 2) prefix = '🥉';
+                  
+                  const qualityBadge = user.averagePoints >= 10 ? '⭐️ ' : 
+                                      user.averagePoints >= 5 ? '✨ ' : '';
+                  
+                  const userName = formatUserName(user);
+                  const userEntry = `${prefix} ${qualityBadge}${userName}: ${user.totalPoints} pts\n   ${user.messageCount} messages, ${user.averagePoints} avg score`;
+                  
+                  leaderboardEntries += userEntry + '\n\n';
+                } catch (userError) {
+                  console.error(`Error formatting leaderboard entry for index ${index}:`, userError);
+                  leaderboardEntries += `${index + 1}. Error formatting user\n\n`;
+                }
+              }
+              
+              // Create leaderboard message with HTML formatting
+              const leaderboardMessage = `
+🏆 <b>Quality-Based Leaderboard for "${escapeHTML(chatTitle)}"</b>
+
+${leaderboardEntries}
+<b>How points are earned:</b>
+- Content quality and relevance 
+- Positive sentiment and helpfulness
+- Relevant topic discussions
+- Asking thoughtful questions
+- Sharing valuable information
+
+<i>Tracking quality-based points since bot was added</i>`;
+              
+              // Delete the processing message
+              if (processingMsg) {
+                try {
+                  await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+                } catch (deleteError) {
+                  console.error(`Error deleting processing message: ${deleteError.message}`);
+                }
+              }
+              
+              await ctx.reply(leaderboardMessage, { parse_mode: 'HTML' });
+            } catch (error) {
+              console.error(`Error executing leaderboard command: ${error.message}`);
+              await ctx.reply('Sorry, there was an error generating the leaderboard.');
+            }
             break;
             
           case 'price':
-            // For price, we need to preserve the coin parameter
-            await ctx.deleteMessage();
-            // Get the original coin parameter if available
-            const match = ctx.callbackQuery.message.text.match(/for (\w+):$/);
-            if (match && match[1]) {
-              const coin = match[1].toLowerCase();
-              fakeContext.message = {
-                ...ctx.callbackQuery.message,
-                text: `/price ${coin}`
-              };
+            try {
+              console.log(`Directly executing price for group ${groupId}`);
+              
+              // Get the original coin parameter if available
+              const match = ctx.callbackQuery.message.text.match(/for (\w+):$/);
+              if (!match || !match[1]) {
+                return await ctx.reply('Please specify a cryptocurrency symbol. Example: /price btc');
+              }
+              
+              const symbol = match[1].toLowerCase();
+              
+              // Fetch price data from CoinGecko API
+              const response = await axios.get(`https://api.coingecko.com/api/v3/simple/price?ids=${symbol},${symbol}-token&vs_currencies=usd&include_24hr_change=true&include_market_cap=true`);
+              
+              // Try to match the symbol to a response key
+              let coinData = null;
+              if (response.data[symbol]) {
+                coinData = response.data[symbol];
+              } else if (response.data[`${symbol}-token`]) {
+                coinData = response.data[`${symbol}-token`];
+              }
+              
+              if (!coinData || !coinData.usd) {
+                // If primary lookup fails, try searching by ID
+                const searchResponse = await axios.get(`https://api.coingecko.com/api/v3/search?query=${symbol}`);
+                
+                if (searchResponse.data.coins && searchResponse.data.coins.length > 0) {
+                  const coinId = searchResponse.data.coins[0].id;
+                  const detailedResponse = await axios.get(`https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true`);
+                  coinData = detailedResponse.data[coinId];
+                }
+              }
+              
+              if (coinData && coinData.usd) {
+                const priceChangeEmoji = coinData.usd_24h_change > 0 ? '📈' : 
+                                        coinData.usd_24h_change < 0 ? '📉' : '➖';
+                                        
+                const marketCapFormatted = coinData.usd_market_cap ? 
+                  `$${(coinData.usd_market_cap / 1000000).toFixed(2)}M` : 'Unknown';
+                  
+                const message = `
+💲 *${symbol.toUpperCase()} Price Info*
+
+Current Price: $${coinData.usd.toLocaleString()}
+24h Change: ${coinData.usd_24h_change ? coinData.usd_24h_change.toFixed(2) + '%' : 'Unknown'} ${priceChangeEmoji}
+Market Cap: ${marketCapFormatted}
+
+_Data from CoinGecko_
+`;
+                await ctx.reply(message, { parse_mode: 'Markdown' });
+              } else {
+                await ctx.reply(`Could not find price data for ${symbol.toUpperCase()}. Please check the symbol and try again.`);
+              }
+            } catch (error) {
+              console.error(`Error executing price command: ${error.message}`);
+              await ctx.reply('Sorry, there was an error fetching price data.');
             }
-            await bot.handleCommand('price')(fakeContext);
             break;
             
           default:
