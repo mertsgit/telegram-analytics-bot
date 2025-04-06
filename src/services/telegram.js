@@ -491,6 +491,8 @@ _You can use commands like /stats, /topics and /leaderboard in private chat with
             
             // Override chat context with the selected group
             ctx.chat.id = selectedGroupId;
+            // Store original chat type to help with checks later
+            ctx.originalChatType = 'private';
             console.log(`Selected group for stats: ${selectedGroupId}`);
           } else {
             // For owner, always prompt to select a group
@@ -548,8 +550,9 @@ _You can use commands like /stats, /topics and /leaderboard in private chat with
           return await ctx.reply('⚠️ Database connection is unavailable. Stats cannot be retrieved at this time.');
         }
 
-        // Only allow in group chats
-        if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+        // Only enforce group chat type check if not in private chat mode
+        const originalChatType = ctx.originalChatType || ctx.chat.type;
+        if (originalChatType !== 'private' && ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
           console.log('Stats command rejected: Not a group chat');
           return await ctx.reply('This command only works in group chats.');
         }
@@ -654,6 +657,8 @@ _Use /topics for detailed topic analysis_`;
             
             // Override chat context with the selected group
             ctx.chat.id = selectedGroupId;
+            // Store original chat type to help with checks later
+            ctx.originalChatType = 'private';
             console.log(`Selected group for topics: ${selectedGroupId}`);
           } else {
             // For owner, prompt to select a group
@@ -711,8 +716,9 @@ _Use /topics for detailed topic analysis_`;
           return await ctx.reply('⚠️ Database connection is unavailable. Topics cannot be retrieved at this time.');
         }
 
-        // Only allow in group chats
-        if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+        // Only enforce group chat type check if not in private chat mode
+        const originalChatType = ctx.originalChatType || ctx.chat.type;
+        if (originalChatType !== 'private' && ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
           console.log('Topics command rejected: Not a group chat');
           return await ctx.reply('This command only works in group chats.');
         }
@@ -820,6 +826,8 @@ _Use /topics for detailed topic analysis_`;
             
             // Override chat context with the selected group
             ctx.chat.id = selectedGroupId;
+            // Store original chat type to help with checks later
+            ctx.originalChatType = 'private';
             console.log(`Selected group for price (${symbol}): ${selectedGroupId}`);
           } else {
             // For owner, skip group selection in price command
@@ -917,6 +925,8 @@ _Data from CoinGecko_
             
             // Override chat context with the selected group
             ctx.chat.id = selectedGroupId;
+            // Store original chat type to help with checks later
+            ctx.originalChatType = 'private';
             console.log(`Selected group for leaderboard: ${selectedGroupId}`);
           } else {
             // For owner, prompt to select a group
@@ -974,8 +984,9 @@ _Data from CoinGecko_
           return await ctx.reply('⚠️ Database connection is unavailable. Leaderboard cannot be retrieved at this time.');
         }
 
-        // Only allow in group chats
-        if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
+        // Only enforce group chat type check if not in private chat mode
+        const originalChatType = ctx.originalChatType || ctx.chat.type;
+        if (originalChatType !== 'private' && ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') {
           console.log('Leaderboard command rejected: Not a group chat');
           return await ctx.reply('This command only works in group chats.');
         }
@@ -1316,7 +1327,9 @@ ${leaderboardEntries}
           chat: {
             id: groupId,
             type: 'supergroup'
-          }
+          },
+          // Store the original chat type to know this came from a private chat
+          originalChatType: 'private'
         };
         
         // Execute the command based on what was selected
