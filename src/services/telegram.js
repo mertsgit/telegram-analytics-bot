@@ -283,63 +283,6 @@ const getGroupsForSelection = async (userId) => {
   return groupsWithInfo;
 };
 
-// Get groups where regular user is a member for display in private chat
-const getUserGroups = async (userId) => {
-  try {
-    console.log(`Getting groups where user ${userId} is a member`);
-    
-    const userGroups = [];
-    
-    // Check all allowed groups to see if the user is a member
-    for (const groupId of ALLOWED_GROUP_IDS) {
-      try {
-        // Format group ID with -100 prefix if needed
-        const formattedGroupId = groupId.toString().startsWith('-100') ? 
-          groupId.toString() : 
-          `-100${groupId.toString().substring(1)}`;
-        
-        console.log(`Checking membership in group ${formattedGroupId}`);
-        
-        try {
-          // Try to get chat member info - if this succeeds, user is a member
-          const chatMember = await bot.telegram.getChatMember(formattedGroupId, userId);
-          
-          // If we got a response and status isn't 'left' or 'kicked', they're a member
-          if (chatMember && chatMember.status !== 'left' && chatMember.status !== 'kicked') {
-            console.log(`User ${userId} is a member (${chatMember.status}) in group ${formattedGroupId}`);
-            
-            // Get group info for title
-            const chatInfo = await bot.telegram.getChat(formattedGroupId);
-            
-            userGroups.push({
-              id: formattedGroupId,
-              originalId: groupId,
-              title: chatInfo.title || 'Unknown Group',
-              role: chatMember.status
-            });
-          }
-        } catch (chatMemberError) {
-          if (chatMemberError.message.includes('user not found')) {
-            console.log(`User ${userId} is not a member of group ${formattedGroupId}`);
-          } else {
-            console.error(`Error checking membership in group ${formattedGroupId}: ${chatMemberError.message}`);
-          }
-          // Continue checking other groups
-        }
-      } catch (groupError) {
-        console.error(`Error processing group ${groupId}: ${groupError.message}`);
-        // Continue checking other groups
-      }
-    }
-    
-    console.log(`Found ${userGroups.length} groups for user ${userId}`);
-    return userGroups;
-  } catch (error) {
-    console.error(`Error getting user groups: ${error.message}`);
-    return null;
-  }
-};
-
 // Initialize bot with commands and message handlers
 const initBot = async () => {
   try {
@@ -409,7 +352,7 @@ Just use any command, and I'll ask you which group you want to view information 
             await ctx.reply(message);
           } else {
             // Regular user gets standard message
-            await ctx.reply('Hello! I track and analyze messages in authorized groups. Use /help to see commands. You can also use the /leaderboard command in this private chat to check the leaderboard of groups you are a member of.');
+            await ctx.reply('Hello! I track and analyze messages in authorized groups. Use /help to see commands.');
           }
         } else {
           // Group chat check
@@ -480,8 +423,7 @@ ${isOwner ? "As the bot owner, you have full access to all commands and all grou
             '/topics - Show categorized topics in this chat\n' +
             '/leaderboard - Show top users ranked by quality score\n' +
             '/health - Check bot service health\n' +
-            '/price <coin> - Check current price of a cryptocurrency\n\n' +
-            'Note: Regular members can also use /leaderboard in private chat with the bot to check leaderboards of groups they belong to.'
+            '/price <coin> - Check current price of a cryptocurrency'
           );
         }
       } catch (error) {
@@ -618,8 +560,29 @@ _You can use commands like /stats, /topics and /leaderboard in private chat with
         const chatId = ctx.chat.id;
         console.log(`Fetching stats for chat ${chatId}`);
         
+        // Convert the group ID to the right format for database queries
+        // This is likely the key issue - we need to ensure the format matches what's in the DB
+        console.log(`Original groupId: ${chatId}`);
+        
         // Use the static method to get chat stats
-        const stats = await Message.getChatStats(chatId);
+        let stats = await Message.getChatStats(chatId);
+        
+        // If no results, try with normalized format (removing -100 prefix if it exists)
+        if (!stats || stats.totalMessages === 0) {
+          const normalizedGroupId = chatId.toString().startsWith('-100') ? 
+            parseInt(chatId.toString().substring(4)) * -1 : 
+            parseInt(chatId);
+          
+          console.log(`No stats found with original ID. Trying normalized groupId: ${normalizedGroupId}`);
+          const normalizedStats = await Message.getChatStats(normalizedGroupId);
+          
+          if (!normalizedStats || normalizedStats.totalMessages === 0) {
+            return await ctx.reply(`No messages have been tracked in ${ctx.chat.title} yet.`);
+          }
+          
+          // Use the normalized stats if found
+          stats = normalizedStats;
+        }
         
         if (!stats || stats.totalMessages === 0) {
           return await ctx.reply('No messages have been tracked in this chat yet. Send some messages first!');
@@ -666,20 +629,9 @@ _You can use commands like /stats, /topics and /leaderboard in private chat with
           .filter(t => /bitcoin|btc|eth|ethereum|crypto|token|blockchain|solana|sol|nft|defi|trading|coin/i.test(t._id))
           .slice(0, 5);
         
-        // Get chat title
-        let chatTitle = "the selected group";
-        try {
-          const chatInfo = await bot.telegram.getChat(chatId);
-          chatTitle = chatInfo.title || "Unknown Group";
-          console.log(`Retrieved chat title for ${chatId}: "${chatTitle}"`);
-        } catch (chatError) {
-          console.error(`Error getting chat title: ${chatError.message}`);
-          // Continue with default title
-        }
-        
         // Build the stats message with focus on sentiment
         const statsMessage = `
-📊 *Sentiment Analysis for "${chatTitle}"*
+📊 *Sentiment Analysis for "${ctx.chat.title}"*
 
 *Sentiment Breakdown:*
 ${sentiments.map(s => `- ${s.charAt(0).toUpperCase() + s.slice(1)}: ${sentimentPercentages[s]}% (${sentimentData[s] || 0} messages)`).join('\n')}
@@ -796,12 +748,27 @@ _Use /topics for detailed topic analysis_`;
         console.log(`Fetching topics for chat ${chatId}`);
         
         // Get topics using the static method
-        const topics = await Message.getChatTopics(chatId);
+        let topics = await Message.getChatTopics(chatId);
         
-        console.log(`Called Message.getChatTopics with groupId=${chatId} for callback query`);
+        // If no results, try with normalized format (removing -100 prefix if it exists)
+        if (!topics || topics.length === 0) {
+          const normalizedGroupId = chatId.toString().startsWith('-100') ? 
+            parseInt(chatId.toString().substring(4)) * -1 : 
+            parseInt(chatId);
+          
+          console.log(`No topics found with original ID. Trying normalized groupId: ${normalizedGroupId}`);
+          const normalizedTopics = await Message.getChatTopics(normalizedGroupId);
+          
+          if (!normalizedTopics || normalizedTopics.length === 0) {
+            return await ctx.reply(`No topics have been identified in ${ctx.chat.title} yet.`);
+          }
+          
+          // Use the normalized topics if found
+          topics = normalizedTopics;
+        }
         
         if (!topics || topics.length === 0) {
-          return await ctx.reply(`No topics have been identified in ${ctx.chat.title} yet.`);
+          return await ctx.reply('No topics have been identified in this chat yet. Send some messages first!');
         }
         
         // Categorize topics
@@ -975,49 +942,56 @@ _Data from CoinGecko_
       }
     });
 
-    // Handle leaderboard command (Allowed groups only)
+    // Add leaderboard command (Allowed groups only)
     bot.command('leaderboard', async (ctx) => {
       try {
         console.log(`Leaderboard command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'}) by user ${ctx.from.id}`);
         
-        // Private chat handling for any user
+        // Private chat handling for group admins
         if (ctx.chat.type === 'private') {
           console.log(`Leaderboard command in private chat from user ${ctx.from.id}`);
           const isOwner = ctx.from.id === OWNER_ID;
           
-          // Get groups where the user is admin
-          const adminGroups = await isGroupAdmin(ctx.from.id);
-          
-          if (isOwner || adminGroups) {
-            // Owner or admin gets to select from all allowed groups or their admin groups
-            const groups = isOwner ? 
-              // For owner, get all groups
-              await Promise.all(ALLOWED_GROUP_IDS.map(async (groupId) => {
-                try {
-                  // Format group ID with -100 prefix if needed
-                  const formattedGroupId = groupId.toString().startsWith('-100') ? 
-                    groupId.toString() : 
-                    `-100${groupId.toString().substring(1)}`;
-                  
-                  const chatInfo = await bot.telegram.getChat(formattedGroupId);
-                  return {
-                    id: formattedGroupId,
-                    originalId: groupId,
-                    role: 'owner',
-                    title: chatInfo.title || 'Unknown Group'
-                  };
-                } catch (error) {
-                  console.error(`Error getting group info for ${groupId}: ${error.message}`);
-                  return {
-                    id: formattedGroupId,
-                    originalId: groupId,
-                    role: 'owner',
-                    title: 'Unknown Group'
-                  };
-                }
-              })) :
-              // For admins, get their admin groups
-              await getGroupsForSelection(ctx.from.id);
+          if (!isOwner) {
+            // Check if user is admin in any allowed groups
+            const selectedGroupId = await promptGroupSelection(ctx, ctx.from.id, 'leaderboard');
+            
+            if (!selectedGroupId) {
+              // Selection is pending or user has no authorized groups
+              return;
+            }
+            
+            // Override chat context with the selected group
+            ctx.chat.id = selectedGroupId;
+            // Store original chat type to help with checks later
+            ctx.originalChatType = 'private';
+            console.log(`Selected group for leaderboard: ${selectedGroupId}`);
+          } else {
+            // For owner, prompt to select a group
+            const groups = await Promise.all(ALLOWED_GROUP_IDS.map(async (groupId) => {
+              try {
+                // Format group ID with -100 prefix if needed
+                const formattedGroupId = groupId.toString().startsWith('-100') ? 
+                  groupId.toString() : 
+                  `-100${groupId.toString().substring(1)}`;
+                
+                const chatInfo = await bot.telegram.getChat(formattedGroupId);
+                return {
+                  id: formattedGroupId,
+                  originalId: groupId,
+                  role: 'owner',
+                  title: chatInfo.title || 'Unknown Group'
+                };
+              } catch (error) {
+                console.error(`Error getting group info for ${groupId}: ${error.message}`);
+                return {
+                  id: formattedGroupId,
+                  originalId: groupId,
+                  role: 'owner',
+                  title: 'Unknown Group'
+                };
+              }
+            }));
             
             // Create message with group selection buttons
             let message = 'Please select a group to view leaderboard for:';
@@ -1025,27 +999,6 @@ _Data from CoinGecko_
             
             await ctx.reply(message, options);
             return;
-          } else {
-            // Regular user - check if they are a member of any allowed groups
-            const userGroups = await getUserGroups(ctx.from.id);
-            
-            if (!userGroups || userGroups.length === 0) {
-              return await ctx.reply('You are not a member of any groups that use this bot.');
-            }
-            
-            // If they are in exactly one group, select it automatically
-            if (userGroups.length === 1) {
-              ctx.chat.id = userGroups[0].id;
-              ctx.originalChatType = 'private';
-              console.log(`Auto-selected only available group for user ${ctx.from.id}: ${userGroups[0].id} (${userGroups[0].title})`);
-            } else {
-              // Let them select from groups they're a member of
-              let message = 'Please select a group to view leaderboard for:';
-              const options = createGroupSelectionKeyboard(userGroups, 'leaderboard');
-              
-              await ctx.reply(message, options);
-              return;
-            }
           }
         }
         
@@ -1091,6 +1044,30 @@ _Data from CoinGecko_
         try {
           // Get leaderboard data using the new quality-based method
           const leaderboard = await Message.getChatLeaderboard(chatId, 10);
+          
+          // If no results, try with normalized format (removing -100 prefix if it exists)
+          if (!leaderboard || leaderboard.length === 0) {
+            const normalizedGroupId = chatId.toString().startsWith('-100') ? 
+              parseInt(chatId.toString().substring(4)) * -1 : 
+              parseInt(chatId);
+            
+            console.log(`No leaderboard found with original ID. Trying normalized groupId: ${normalizedGroupId}`);
+            const normalizedLeaderboard = await Message.getChatLeaderboard(normalizedGroupId, 10);
+            
+            if (!normalizedLeaderboard || normalizedLeaderboard.length === 0) {
+              if (processingMsg) {
+                try {
+                  await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+                } catch (deleteError) {
+                  console.error(`Error deleting processing message: ${deleteError.message}`);
+                }
+              }
+              return await ctx.reply(`No messages have been tracked in ${chatTitle} yet.`);
+            }
+            
+            // Use the normalized leaderboard if found
+            leaderboard = normalizedLeaderboard;
+          }
           
           if (!leaderboard || leaderboard.length === 0) {
             if (processingMsg) {
@@ -1433,11 +1410,9 @@ ${leaderboardEntries}
         let chatTitle = "the selected group";
         try {
           const chatInfo = await bot.telegram.getChat(groupId);
-          chatTitle = chatInfo.title || "Unknown Group";
-          console.log(`Retrieved chat title for ${groupId}: "${chatTitle}"`);
+          chatTitle = chatInfo.title;
         } catch (chatError) {
-          console.error(`Error getting chat title: ${chatError.message}`);
-          // Continue with default title
+          console.error(`Error getting chat info: ${chatError.message}`);
         }
         
         // Execute the appropriate functionality based on command
@@ -1452,8 +1427,29 @@ ${leaderboardEntries}
                 return await ctx.reply('⚠️ Database connection is unavailable. Stats cannot be retrieved at this time.');
               }
               
+              // Convert the group ID to the right format for database queries
+              // This is likely the key issue - we need to ensure the format matches what's in the DB
+              console.log(`Original groupId: ${groupId}`);
+              
               // Use the static method to get chat stats
-              const stats = await Message.getChatStats(groupId);
+              let stats = await Message.getChatStats(groupId);
+              
+              // If no results, try with normalized format (removing -100 prefix if it exists)
+              if (!stats || stats.totalMessages === 0) {
+                const normalizedGroupId = groupId.toString().startsWith('-100') ? 
+                  parseInt(groupId.toString().substring(4)) * -1 : 
+                  parseInt(groupId);
+                
+                console.log(`No stats found with original ID. Trying normalized groupId: ${normalizedGroupId}`);
+                const normalizedStats = await Message.getChatStats(normalizedGroupId);
+                
+                if (!normalizedStats || normalizedStats.totalMessages === 0) {
+                  return await ctx.reply(`No messages have been tracked in ${chatTitle} yet.`);
+                }
+                
+                // Use the normalized stats if found
+                stats = normalizedStats;
+              }
               
               if (!stats || stats.totalMessages === 0) {
                 return await ctx.reply(`No messages have been tracked in ${chatTitle} yet.`);
@@ -1534,9 +1530,24 @@ _Use /topics for detailed topic analysis_`;
               }
               
               // Get topics using the static method
-              const topics = await Message.getChatTopics(groupId);
+              let topics = await Message.getChatTopics(groupId);
               
-              console.log(`Called Message.getChatTopics with groupId=${groupId} for callback query`);
+              // If no results, try with normalized format (removing -100 prefix if it exists)
+              if (!topics || topics.length === 0) {
+                const normalizedGroupId = groupId.toString().startsWith('-100') ? 
+                  parseInt(groupId.toString().substring(4)) * -1 : 
+                  parseInt(groupId);
+                
+                console.log(`No topics found with original ID. Trying normalized groupId: ${normalizedGroupId}`);
+                const normalizedTopics = await Message.getChatTopics(normalizedGroupId);
+                
+                if (!normalizedTopics || normalizedTopics.length === 0) {
+                  return await ctx.reply(`No topics have been identified in ${chatTitle} yet.`);
+                }
+                
+                // Use the normalized topics if found
+                topics = normalizedTopics;
+              }
               
               if (!topics || topics.length === 0) {
                 return await ctx.reply(`No topics have been identified in ${chatTitle} yet.`);
@@ -1622,7 +1633,31 @@ _Use /topics for detailed topic analysis_`;
               }
               
               // Get leaderboard data
-              const leaderboard = await Message.getChatLeaderboard(groupId, 10);
+              let leaderboard = await Message.getChatLeaderboard(groupId, 10);
+              
+              // If no results, try with normalized format (removing -100 prefix if it exists)
+              if (!leaderboard || leaderboard.length === 0) {
+                const normalizedGroupId = groupId.toString().startsWith('-100') ? 
+                  parseInt(groupId.toString().substring(4)) * -1 : 
+                  parseInt(groupId);
+                
+                console.log(`No leaderboard found with original ID. Trying normalized groupId: ${normalizedGroupId}`);
+                const normalizedLeaderboard = await Message.getChatLeaderboard(normalizedGroupId, 10);
+                
+                if (!normalizedLeaderboard || normalizedLeaderboard.length === 0) {
+                  if (processingMsg) {
+                    try {
+                      await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+                    } catch (deleteError) {
+                      console.error(`Error deleting processing message: ${deleteError.message}`);
+                    }
+                  }
+                  return await ctx.reply(`No messages have been tracked in ${chatTitle} yet.`);
+                }
+                
+                // Use the normalized leaderboard if found
+                leaderboard = normalizedLeaderboard;
+              }
               
               if (!leaderboard || leaderboard.length === 0) {
                 if (processingMsg) {
