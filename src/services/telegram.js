@@ -22,6 +22,14 @@ let initializationError = null;
 let launchRetryCount = 0;
 const MAX_LAUNCH_RETRIES = 5;
 
+// Store group admins cache - maps user IDs to groups they admin
+let groupAdminsCache = {};
+// Cache expiry time - 1 hour
+const ADMIN_CACHE_EXPIRY = 60 * 60 * 1000; 
+
+// Cache last accessed group for users in private chat
+let userLastGroupCache = {};
+
 try {
   if (!process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN.trim() === '') {
     initializationError = 'Telegram Bot Token is missing or empty. Bot cannot start.';
@@ -62,6 +70,48 @@ ${status.launchRetryCount > 0 ? `- Launch retries: ${status.launchRetryCount}/${
 ${status.openAIError ? `- OpenAI Error: ${status.openAIError}` : ''}
 ${status.initializationError ? `- Error: ${status.initializationError}` : ''}
   `;
+};
+
+// Create an inline keyboard for selecting groups
+const createGroupSelectionKeyboard = (groups, commandPrefix) => {
+  return {
+    reply_markup: {
+      inline_keyboard: groups.map(group => [
+        {
+          text: group.title,
+          callback_data: `${commandPrefix}:${group.id}`
+        }
+      ])
+    }
+  };
+};
+
+// Prompt user to select a group in private chat
+const promptGroupSelection = async (ctx, userId, commandName) => {
+  try {
+    const groups = await getGroupsForSelection(userId);
+    
+    if (!groups || groups.length === 0) {
+      return await ctx.reply('You are not an admin or owner in any authorized groups. This feature is only available to group admins and owners.');
+    }
+    
+    // If only one group, automatically select it
+    if (groups.length === 1) {
+      userLastGroupCache[userId] = groups[0].id;
+      return groups[0].id;
+    }
+    
+    // Create message with group selection buttons
+    let message = `Please select a group to view ${commandName} for:`;
+    const options = createGroupSelectionKeyboard(groups, commandName);
+    
+    await ctx.reply(message, options);
+    return null; // Null indicates selection is pending
+  } catch (error) {
+    console.error(`Error prompting group selection: ${error.message}`);
+    await ctx.reply('Sorry, there was an error getting your groups. Please try again later.');
+    return null;
+  }
 };
 
 // Helper function to launch the bot with retries
@@ -148,6 +198,91 @@ const isAllowedGroup = (chatId) => {
   return false;
 };
 
+// Check if user is an admin in any of the allowed groups
+const isGroupAdmin = async (userId) => {
+  try {
+    // Check cache first
+    if (groupAdminsCache[userId] && (Date.now() - groupAdminsCache[userId].timestamp < ADMIN_CACHE_EXPIRY)) {
+      console.log(`Using cached admin status for user ${userId}`);
+      return groupAdminsCache[userId].isAdmin ? groupAdminsCache[userId].groups : false;
+    }
+    
+    // Not in cache or cache expired, check each allowed group
+    console.log(`Checking if user ${userId} is an admin in any allowed groups...`);
+    let adminGroups = [];
+    
+    for (const groupId of ALLOWED_GROUP_IDS) {
+      try {
+        // For each group ID, we need to convert to the format Telegram expects (-100 prefix for supergroups)
+        const formattedGroupId = groupId.toString().startsWith('-100') ? 
+          groupId.toString() : 
+          `-100${groupId.toString().substring(1)}`;
+        
+        console.log(`Checking admin status in group ${formattedGroupId}`);
+        const chatMember = await bot.telegram.getChatMember(formattedGroupId, userId);
+        
+        // Check if user is admin or owner in this group
+        if (chatMember && (
+            chatMember.status === 'creator' || 
+            chatMember.status === 'administrator'
+          )) {
+          console.log(`User ${userId} is ${chatMember.status} in group ${formattedGroupId}`);
+          adminGroups.push({
+            id: formattedGroupId,
+            originalId: groupId,
+            role: chatMember.status
+          });
+        }
+      } catch (groupError) {
+        console.error(`Error checking admin status in group ${groupId}: ${groupError.message}`);
+        // Continue checking other groups
+      }
+    }
+    
+    // Update cache
+    groupAdminsCache[userId] = {
+      isAdmin: adminGroups.length > 0,
+      groups: adminGroups.length > 0 ? adminGroups : false,
+      timestamp: Date.now()
+    };
+    
+    return adminGroups.length > 0 ? adminGroups : false;
+  } catch (error) {
+    console.error(`Error checking admin status: ${error.message}`);
+    return false;
+  }
+};
+
+// Get groups where user is admin for display in private chat
+const getGroupsForSelection = async (userId) => {
+  const adminGroups = await isGroupAdmin(userId);
+  
+  if (!adminGroups) {
+    return null;
+  }
+  
+  // Get group names for each group
+  const groupsWithInfo = await Promise.all(
+    adminGroups.map(async (group) => {
+      try {
+        const chatInfo = await bot.telegram.getChat(group.id);
+        return {
+          ...group,
+          title: chatInfo.title || 'Unknown Group'
+        };
+      } catch (error) {
+        console.error(`Error getting group info for ${group.id}: ${error.message}`);
+        return {
+          ...group,
+          title: 'Unknown Group'
+        };
+      }
+    })
+  );
+  
+  return groupsWithInfo;
+};
+
 // Initialize bot with commands and message handlers
 const initBot = async () => {
   try {
@@ -186,7 +321,39 @@ const initBot = async () => {
     bot.command('start', async (ctx) => {
       try {
         if (ctx.chat.type === 'private') {
-          await ctx.reply('Hello! I track and analyze messages in authorized groups. Use /help to see commands.');
+          const isOwner = ctx.from.id === OWNER_ID;
+          
+          // Check if user is a group admin
+          const adminGroups = await isGroupAdmin(ctx.from.id);
+          
+          if (isOwner) {
+            // Owner gets full access message
+            await ctx.reply('Hello! I track and analyze messages in authorized groups. As the owner, you have full access to all commands and group statistics. Use /help to see available commands.');
+          } else if (adminGroups) {
+            // Group admin gets special access message
+            const groupsWithInfo = await getGroupsForSelection(ctx.from.id);
+            const groupsList = groupsWithInfo.map(g => `- ${g.title}`).join('\n');
+            
+            const message = `
+Hello! I track and analyze messages in authorized groups.
+
+You are an admin in the following groups:
+${groupsList}
+
+As a group admin, you can use the following commands in this private chat:
+• /stats - View sentiment analysis and stats for your groups
+• /topics - Show topic categories in your groups
+• /leaderboard - View quality-based user rankings
+• /health - Check bot health and your admin groups
+• /price - Check cryptocurrency prices
+
+Just use any command, and I'll ask you which group you want to view information for.
+`;
+            await ctx.reply(message);
+          } else {
+            // Regular user gets standard message
+            await ctx.reply('Hello! I track and analyze messages in authorized groups. Use /help to see commands.');
+          }
         } else {
           // Group chat check
           const chatIdForCheck = ctx.chat?.id;
@@ -222,16 +389,43 @@ Use /help to see available commands.`;
     // Handle help command
     bot.command('help', async (ctx) => {
       try {
-        await ctx.reply(
-          'Commands:\n' +
-          '/start - Start the bot\n' +
-          '/help - Show this help message\n' +
-          '/stats - Show sentiment analysis and basic stats\n' +
-          '/topics - Show categorized topics in this chat\n' +
-          '/leaderboard - Show top users ranked by quality score\n' +
-          '/health - Check bot service health\n' +
-          '/price <coin> - Check current price of a cryptocurrency'
-        );
+        const isOwner = ctx.from.id === OWNER_ID;
+        const isPrivateChat = ctx.chat.type === 'private';
+        const adminGroups = isPrivateChat ? await isGroupAdmin(ctx.from.id) : false;
+        
+        // Different help messages based on user role and chat type
+        if (isPrivateChat && (isOwner || adminGroups)) {
+          // Owner or admin in private chat
+          const adminHelpMessage = `
+📋 *Available Commands*
+
+Group Analysis Commands (work in private chat or groups):
+• /stats - View sentiment analysis and message statistics
+• /topics - Show categorized topics in the chat
+• /leaderboard - Show top users ranked by quality score
+• /price <coin> - Check current price of a cryptocurrency
+
+System Commands:
+• /start - Start the bot
+• /help - Show this help message
+• /health - Check bot health status
+
+${isOwner ? "As the bot owner, you have full access to all commands and all group data." : "As a group admin, you can use analysis commands in this private chat. You'll be asked which group you want to analyze."}
+`;
+          await ctx.reply(adminHelpMessage, { parse_mode: 'Markdown' });
+        } else {
+          // Regular user or in group chat
+          await ctx.reply(
+            'Commands:\n' +
+            '/start - Start the bot\n' +
+            '/help - Show this help message\n' +
+            '/stats - Show sentiment analysis and basic stats\n' +
+            '/topics - Show categorized topics in this chat\n' +
+            '/leaderboard - Show top users ranked by quality score\n' +
+            '/health - Check bot service health\n' +
+            '/price <coin> - Check current price of a cryptocurrency'
+          );
+        }
       } catch (error) {
         console.error(`Error handling help command: ${error.message}`);
         await ctx.reply('Sorry, there was an error displaying the help message. Please try again later.');
@@ -241,9 +435,34 @@ Use /help to see available commands.`;
     // Handle health command (Allowed in groups or by owner)
     bot.command('health', async (ctx) => {
       try {
-        if (!isAllowedGroup(ctx.chat.id) && ctx.from.id !== OWNER_ID) {
+        const isOwner = ctx.from.id === OWNER_ID;
+        
+        // Check authorization
+        if (!isAllowedGroup(ctx.chat.id) && !isOwner) {
+          // If not in allowed group or owner, check if user is admin in any allowed group
+          const adminGroups = await isGroupAdmin(ctx.from.id);
+          
+          if (!adminGroups) {
             return await ctx.reply('Sorry, this command is restricted.');
+          }
+          
+          // User is admin in allowed groups, show basic health plus their groups
+          const groupsWithInfo = await getGroupsForSelection(ctx.from.id);
+          const groupsList = groupsWithInfo.map(g => `- ${g.title} (${g.role})`).join('\n');
+          
+          const message = `
+${formatServiceStatusMessage()}
+
+🔑 *Your Admin Groups:*
+${groupsList}
+
+_You can use commands like /stats, /topics and /leaderboard in private chat with me to get information about these groups._
+          `;
+          
+          return await ctx.reply(message, { parse_mode: 'Markdown' });
         }
+        
+        // For owner, show full health status
         await ctx.reply(formatServiceStatusMessage(), { parse_mode: 'Markdown' });
       } catch (error) {
         console.error(`Error handling health command: ${error.message}`);
@@ -255,6 +474,59 @@ Use /help to see available commands.`;
     bot.command('stats', async (ctx) => {
       try {
         console.log(`Stats command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'}) by user ${ctx.from.id}`);
+        
+        // Private chat handling for group admins
+        if (ctx.chat.type === 'private') {
+          console.log(`Stats command in private chat from user ${ctx.from.id}`);
+          const isOwner = ctx.from.id === OWNER_ID;
+          
+          if (!isOwner) {
+            // Check if user is admin in any allowed groups
+            const selectedGroupId = await promptGroupSelection(ctx, ctx.from.id, 'stats');
+            
+            if (!selectedGroupId) {
+              // Selection is pending or user has no authorized groups
+              return;
+            }
+            
+            // Override chat context with the selected group
+            ctx.chat.id = selectedGroupId;
+            console.log(`Selected group for stats: ${selectedGroupId}`);
+          } else {
+            // For owner, always prompt to select a group
+            const groups = await Promise.all(ALLOWED_GROUP_IDS.map(async (groupId) => {
+              try {
+                // Format group ID with -100 prefix if needed
+                const formattedGroupId = groupId.toString().startsWith('-100') ? 
+                  groupId.toString() : 
+                  `-100${groupId.toString().substring(1)}`;
+                
+                const chatInfo = await bot.telegram.getChat(formattedGroupId);
+                return {
+                  id: formattedGroupId,
+                  originalId: groupId,
+                  role: 'owner',
+                  title: chatInfo.title || 'Unknown Group'
+                };
+              } catch (error) {
+                console.error(`Error getting group info for ${groupId}: ${error.message}`);
+                return {
+                  id: formattedGroupId,
+                  originalId: groupId,
+                  role: 'owner',
+                  title: 'Unknown Group'
+                };
+              }
+            }));
+            
+            // Create message with group selection buttons
+            let message = 'Please select a group to view stats for:';
+            const options = createGroupSelectionKeyboard(groups, 'stats');
+            
+            await ctx.reply(message, options);
+            return;
+          }
+        }
         
         // --- Authorization Check ---
         // Debug logging for authorization check
@@ -366,6 +638,59 @@ _Use /topics for detailed topic analysis_`;
       try {
         console.log(`Topics command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'}) by user ${ctx.from.id}`);
         
+        // Private chat handling for group admins
+        if (ctx.chat.type === 'private') {
+          console.log(`Topics command in private chat from user ${ctx.from.id}`);
+          const isOwner = ctx.from.id === OWNER_ID;
+          
+          if (!isOwner) {
+            // Check if user is admin in any allowed groups
+            const selectedGroupId = await promptGroupSelection(ctx, ctx.from.id, 'topics');
+            
+            if (!selectedGroupId) {
+              // Selection is pending or user has no authorized groups
+              return;
+            }
+            
+            // Override chat context with the selected group
+            ctx.chat.id = selectedGroupId;
+            console.log(`Selected group for topics: ${selectedGroupId}`);
+          } else {
+            // For owner, prompt to select a group
+            const groups = await Promise.all(ALLOWED_GROUP_IDS.map(async (groupId) => {
+              try {
+                // Format group ID with -100 prefix if needed
+                const formattedGroupId = groupId.toString().startsWith('-100') ? 
+                  groupId.toString() : 
+                  `-100${groupId.toString().substring(1)}`;
+                
+                const chatInfo = await bot.telegram.getChat(formattedGroupId);
+                return {
+                  id: formattedGroupId,
+                  originalId: groupId,
+                  role: 'owner',
+                  title: chatInfo.title || 'Unknown Group'
+                };
+              } catch (error) {
+                console.error(`Error getting group info for ${groupId}: ${error.message}`);
+                return {
+                  id: formattedGroupId,
+                  originalId: groupId,
+                  role: 'owner',
+                  title: 'Unknown Group'
+                };
+              }
+            }));
+            
+            // Create message with group selection buttons
+            let message = 'Please select a group to view topics for:';
+            const options = createGroupSelectionKeyboard(groups, 'topics');
+            
+            await ctx.reply(message, options);
+            return;
+          }
+        }
+        
         // --- Authorization Check ---
         // Debug logging for authorization check
         const chatIdForCheck = ctx.chat.id;
@@ -467,6 +792,43 @@ _Use /topics for detailed topic analysis_`;
     // Add price command (Allowed groups only)
     bot.command('price', async (ctx) => {
       try {
+        // Check if we have a coin parameter
+        const args = ctx.message.text.split(' ');
+        let symbol = '';
+        
+        if (args.length > 1) {
+          symbol = args[1].toLowerCase().trim();
+        } else {
+          return await ctx.reply('Please specify a cryptocurrency symbol. Example: /price btc');
+        }
+        
+        console.log(`Price command received for ${symbol} in chat ${ctx.chat.id} by user ${ctx.from.id}`);
+        
+        // Private chat handling for group admins
+        if (ctx.chat.type === 'private') {
+          console.log(`Price command in private chat from user ${ctx.from.id} for coin ${symbol}`);
+          const isOwner = ctx.from.id === OWNER_ID;
+          
+          if (!isOwner) {
+            // Check if user is admin in any allowed groups
+            const selectedGroupId = await promptGroupSelection(ctx, ctx.from.id, 'price');
+            
+            if (!selectedGroupId) {
+              // Selection is pending or user has no authorized groups
+              return;
+            }
+            
+            // Override chat context with the selected group
+            ctx.chat.id = selectedGroupId;
+            console.log(`Selected group for price (${symbol}): ${selectedGroupId}`);
+          } else {
+            // For owner, skip group selection in price command
+            // Just execute as if in an allowed group
+            const isGroupAllowed = true;
+            const isOwner = true;
+          }
+        }
+        
         // --- Authorization Check ---
         // Debug logging for authorization check
         const chatIdForCheck = ctx.chat.id;
@@ -481,17 +843,6 @@ _Use /topics for detailed topic analysis_`;
         }
         // --- End Authorization Check ---
 
-        const args = ctx.message.text.split(' ');
-        let symbol = '';
-        
-        if (args.length > 1) {
-          symbol = args[1].toLowerCase().trim();
-        } else {
-          return await ctx.reply('Please specify a cryptocurrency symbol. Example: /price btc');
-        }
-        
-        console.log(`Price command received for ${symbol} in chat ${ctx.chat.id}`);
-        
         // Fetch price data from CoinGecko API
         try {
           const response = await axios.get(`https://api.coingecko.com/api/v3/simple/price?ids=${symbol},${symbol}-token&vs_currencies=usd&include_24hr_change=true&include_market_cap=true`);
@@ -549,6 +900,59 @@ _Data from CoinGecko_
     bot.command('leaderboard', async (ctx) => {
       try {
         console.log(`Leaderboard command received in chat ${ctx.chat.id} (${ctx.chat.title || 'Private Chat'}) by user ${ctx.from.id}`);
+        
+        // Private chat handling for group admins
+        if (ctx.chat.type === 'private') {
+          console.log(`Leaderboard command in private chat from user ${ctx.from.id}`);
+          const isOwner = ctx.from.id === OWNER_ID;
+          
+          if (!isOwner) {
+            // Check if user is admin in any allowed groups
+            const selectedGroupId = await promptGroupSelection(ctx, ctx.from.id, 'leaderboard');
+            
+            if (!selectedGroupId) {
+              // Selection is pending or user has no authorized groups
+              return;
+            }
+            
+            // Override chat context with the selected group
+            ctx.chat.id = selectedGroupId;
+            console.log(`Selected group for leaderboard: ${selectedGroupId}`);
+          } else {
+            // For owner, prompt to select a group
+            const groups = await Promise.all(ALLOWED_GROUP_IDS.map(async (groupId) => {
+              try {
+                // Format group ID with -100 prefix if needed
+                const formattedGroupId = groupId.toString().startsWith('-100') ? 
+                  groupId.toString() : 
+                  `-100${groupId.toString().substring(1)}`;
+                
+                const chatInfo = await bot.telegram.getChat(formattedGroupId);
+                return {
+                  id: formattedGroupId,
+                  originalId: groupId,
+                  role: 'owner',
+                  title: chatInfo.title || 'Unknown Group'
+                };
+              } catch (error) {
+                console.error(`Error getting group info for ${groupId}: ${error.message}`);
+                return {
+                  id: formattedGroupId,
+                  originalId: groupId,
+                  role: 'owner',
+                  title: 'Unknown Group'
+                };
+              }
+            }));
+            
+            // Create message with group selection buttons
+            let message = 'Please select a group to view leaderboard for:';
+            const options = createGroupSelectionKeyboard(groups, 'leaderboard');
+            
+            await ctx.reply(message, options);
+            return;
+          }
+        }
         
         // --- Authorization Check ---
         // Debug logging for authorization check
@@ -881,6 +1285,85 @@ ${leaderboardEntries}
         }
       } catch (replyError) {
         console.error(`Could not send error reply: ${replyError.message}`);
+      }
+    });
+
+    // Handle callback queries for group selection
+    bot.on('callback_query', async (ctx) => {
+      try {
+        const userId = ctx.from.id;
+        const callbackData = ctx.callbackQuery.data;
+        console.log(`Received callback query from user ${userId}: ${callbackData}`);
+        
+        // Parse callback data: command:groupId
+        const [command, groupId] = callbackData.split(':');
+        
+        if (!groupId) {
+          await ctx.answerCallbackQuery('Invalid selection');
+          return;
+        }
+        
+        // Store last selected group for this user
+        userLastGroupCache[userId] = groupId;
+        console.log(`User ${userId} selected group ${groupId} for ${command}`);
+        
+        // Answer the callback query to stop loading animation
+        await ctx.answerCallbackQuery(`Selected group for ${command}`);
+        
+        // Create a fake context simulating a command in the selected group
+        const fakeContext = {
+          ...ctx,
+          chat: {
+            id: groupId,
+            type: 'supergroup'
+          }
+        };
+        
+        // Execute the command based on what was selected
+        switch (command) {
+          case 'stats':
+            // Delete the selection message
+            await ctx.deleteMessage();
+            // Re-run the stats command with the selected group
+            await bot.handleCommand('stats')(fakeContext);
+            break;
+            
+          case 'topics':
+            await ctx.deleteMessage();
+            await bot.handleCommand('topics')(fakeContext);
+            break;
+            
+          case 'leaderboard':
+            await ctx.deleteMessage();
+            await bot.handleCommand('leaderboard')(fakeContext);
+            break;
+            
+          case 'price':
+            // For price, we need to preserve the coin parameter
+            await ctx.deleteMessage();
+            // Get the original coin parameter if available
+            const match = ctx.callbackQuery.message.text.match(/for (\w+):$/);
+            if (match && match[1]) {
+              const coin = match[1].toLowerCase();
+              fakeContext.message = {
+                ...ctx.callbackQuery.message,
+                text: `/price ${coin}`
+              };
+            }
+            await bot.handleCommand('price')(fakeContext);
+            break;
+            
+          default:
+            await ctx.reply('Unknown command selection');
+        }
+      } catch (error) {
+        console.error(`Error handling callback query: ${error.message}`);
+        try {
+          await ctx.answerCallbackQuery('An error occurred');
+          await ctx.reply('Sorry, there was an error processing your selection. Please try again.');
+        } catch (replyError) {
+          console.error(`Error replying to callback query: ${replyError.message}`);
+        }
       }
     });
 
