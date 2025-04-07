@@ -8,7 +8,8 @@ require('dotenv').config();
 // --- Authorization Configuration ---
 const ALLOWED_GROUP_IDS = [
   -2484836322, // Replace with actual negative group ID if needed
-  -2521462418, // Replace with actual negative group ID if needed
+  -2521462418,
+  -2227569944, // Replace with actual negative group ID if needed
   -2648239653  // Replace with actual negative group ID if needed
 ];
 const OWNER_ID = 5348052974;
@@ -65,9 +66,9 @@ const formatServiceStatusMessage = () => {
 🤖 *Bot Health Status*
 ${status.botInitialized ? '- Bot: ✅ Running' : ''}
 - Database: ${status.databaseConnected ? '✅ Connected' : '❌ Disconnected'}
-- OpenAI: ${status.openAIAvailable ? '✅ Available' : '❌ Unavailable'}
+- AI Access: ${status.openAIAvailable ? '✅ Available' : '❌ Unavailable'}
 ${status.launchRetryCount > 0 ? `- Launch retries: ${status.launchRetryCount}/${MAX_LAUNCH_RETRIES}` : ''}
-${status.openAIError ? `- OpenAI Error: ${status.openAIError}` : ''}
+${status.openAIError ? `- AI Error: ${status.openAIError}` : ''}
 ${status.initializationError ? `- Error: ${status.initializationError}` : ''}
   `;
 };
