@@ -786,6 +786,11 @@ _Use /topics for detailed topic analysis_`;
         
         // Categorize topics
         const categories = {
+          memecoin: {
+            name: "🚀 Memecoins & New Tokens",
+            topics: [],
+            regex: /shib|doge|pepe|wojak|pump|moon|wen|memecoin|meme coin|shitcoin|airdrop|presale|launch|1000x|100x|shill|mint|listing|whale|deploy|contract|CA:?|address|token address|([A-HJ-NP-Za-km-z1-9]{32,44})/i
+          },
           crypto: {
             name: "💰 Cryptocurrency",
             topics: [],
@@ -925,6 +930,46 @@ _Use /topics for detailed topic analysis_`;
         
         // Add insights summary
         topicsMessage += `*AI Insights:*\n`;
+        
+        // Add memecoin trading activity insight
+        const memecoinTerms = ['pump', 'moon', 'wen', 'memecoin', 'airdrop', 'presale', 'launch', '1000x', '100x', 'shill', 'degen', 'ape'];
+        const memecoinTopics = topics.filter(t => 
+          memecoinTerms.some(term => t._id.toLowerCase().includes(term)) ||
+          t._id === 'memecoin' ||
+          t._id === 'new_token'
+        );
+        
+        if (memecoinTopics.length > 0) {
+          const topMemecoinTerms = memecoinTopics
+            .slice(0, 3)
+            .map(t => escapeTopicMarkdown(t._id))
+            .join(', ');
+            
+          topicsMessage += `• *Trading Activity:* High memecoin/shitcoin trading activity detected (${topMemecoinTerms})\n`;
+        }
+        
+        // Add token/contract address insight if found
+        const tokenAddressTopics = topics.filter(t => 
+          t._id === 'token_address' || 
+          t._id === 'contract_address' || 
+          /^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(t._id)
+        );
+        
+        if (tokenAddressTopics.length > 0) {
+          topicsMessage += `• *Token Trading Activity:* This group is actively trading memecoins/tokens 🔥\n`;
+          
+          // Extract recent token examples if available
+          const addressExamples = topics
+            .filter(t => /^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(t._id))
+            .slice(0, 3)
+            .map(t => t._id.substring(0, 8) + '...' + t._id.substring(t._id.length - 4))
+            .join(', ');
+            
+          if (addressExamples) {
+            topicsMessage += `• *Recent Contract Addresses:* ${addressExamples}\n`;
+          }
+        }
+        
         if (topics.some(t => t.trending === 'up')) {
           const trendingTopics = topics
             .filter(t => t.trending === 'up')
@@ -932,7 +977,7 @@ _Use /topics for detailed topic analysis_`;
             .slice(0, 3)
             .join(', ');
           
-          topicsMessage += `• Trending discussions: ${trendingTopics}\n`;
+          topicsMessage += `• *Trending Discussions:* ${trendingTopics}\n`;
         }
         
         // Add sentiment overview
@@ -940,11 +985,11 @@ _Use /topics for detailed topic analysis_`;
         const negativeSentimentTopics = topics.filter(t => t.dominantSentiment === 'negative').length;
         
         if (positiveSentimentTopics > negativeSentimentTopics) {
-          topicsMessage += `• Overall positive discussions dominate ${positiveSentimentTopics} topics\n`;
+          topicsMessage += `• *Sentiment:* Overall positive discussions dominate ${positiveSentimentTopics} topics 😀\n`;
         } else if (negativeSentimentTopics > positiveSentimentTopics) {
-          topicsMessage += `• Several topics (${negativeSentimentTopics}) show negative sentiment\n`;
+          topicsMessage += `• *Sentiment:* Several topics (${negativeSentimentTopics}) show negative sentiment 😟\n`;
         } else {
-          topicsMessage += `• Topics show balanced sentiment overall\n`;
+          topicsMessage += `• *Sentiment:* Topics show balanced sentiment overall 😐\n`;
         }
         
         topicsMessage += `\n_Analysis based on ${totalMentions} topic mentions across ${topics.length} unique topics_`;
@@ -1709,6 +1754,11 @@ _Use /topics for detailed topic analysis_`;
               
               // Categorize topics
               const categories = {
+                memecoin: {
+                  name: "🚀 Memecoins & New Tokens",
+                  topics: [],
+                  regex: /shib|doge|pepe|wojak|pump|moon|wen|memecoin|meme coin|shitcoin|airdrop|presale|launch|1000x|100x|shill|mint|listing|whale|deploy|contract|CA:?|address|token address|([A-HJ-NP-Za-km-z1-9]{32,44})/i
+                },
                 crypto: {
                   name: "💰 Cryptocurrency",
                   topics: [],
@@ -1848,6 +1898,46 @@ _Use /topics for detailed topic analysis_`;
               
               // Add insights summary
               topicsMessage += `*AI Insights:*\n`;
+              
+              // Add memecoin trading activity insight
+              const memecoinTerms = ['pump', 'moon', 'wen', 'memecoin', 'airdrop', 'presale', 'launch', '1000x', '100x', 'shill', 'degen', 'ape'];
+              const memecoinTopics = topics.filter(t => 
+                memecoinTerms.some(term => t._id.toLowerCase().includes(term)) ||
+                t._id === 'memecoin' ||
+                t._id === 'new_token'
+              );
+              
+              if (memecoinTopics.length > 0) {
+                const topMemecoinTerms = memecoinTopics
+                  .slice(0, 3)
+                  .map(t => escapeTopicMarkdown(t._id))
+                  .join(', ');
+                  
+                topicsMessage += `• *Trading Activity:* High memecoin/shitcoin trading activity detected (${topMemecoinTerms})\n`;
+              }
+              
+              // Add token/contract address insight if found
+              const tokenAddressTopics = topics.filter(t => 
+                t._id === 'token_address' || 
+                t._id === 'contract_address' || 
+                /^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(t._id)
+              );
+              
+              if (tokenAddressTopics.length > 0) {
+                topicsMessage += `• *Token Trading Activity:* This group is actively trading memecoins/tokens 🔥\n`;
+                
+                // Extract recent token examples if available
+                const addressExamples = topics
+                  .filter(t => /^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(t._id))
+                  .slice(0, 3)
+                  .map(t => t._id.substring(0, 8) + '...' + t._id.substring(t._id.length - 4))
+                  .join(', ');
+                  
+                if (addressExamples) {
+                  topicsMessage += `• *Recent Contract Addresses:* ${addressExamples}\n`;
+                }
+              }
+              
               if (topics.some(t => t.trending === 'up')) {
                 const trendingTopics = topics
                   .filter(t => t.trending === 'up')
@@ -1855,7 +1945,7 @@ _Use /topics for detailed topic analysis_`;
                   .slice(0, 3)
                   .join(', ');
                 
-                topicsMessage += `• Trending discussions: ${trendingTopics}\n`;
+                topicsMessage += `• *Trending Discussions:* ${trendingTopics}\n`;
               }
               
               // Add sentiment overview
@@ -1863,11 +1953,11 @@ _Use /topics for detailed topic analysis_`;
               const negativeSentimentTopics = topics.filter(t => t.dominantSentiment === 'negative').length;
               
               if (positiveSentimentTopics > negativeSentimentTopics) {
-                topicsMessage += `• Overall positive discussions dominate ${positiveSentimentTopics} topics\n`;
+                topicsMessage += `• *Sentiment:* Overall positive discussions dominate ${positiveSentimentTopics} topics 😀\n`;
               } else if (negativeSentimentTopics > positiveSentimentTopics) {
-                topicsMessage += `• Several topics (${negativeSentimentTopics}) show negative sentiment\n`;
+                topicsMessage += `• *Sentiment:* Several topics (${negativeSentimentTopics}) show negative sentiment 😟\n`;
               } else {
-                topicsMessage += `• Topics show balanced sentiment overall\n`;
+                topicsMessage += `• *Sentiment:* Topics show balanced sentiment overall 😐\n`;
               }
               
               topicsMessage += `\n_Analysis based on ${totalMentions} topic mentions across ${topics.length} unique topics_`;

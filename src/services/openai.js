@@ -51,6 +51,32 @@ const resetErrorCounter = () => {
 };
 
 /**
+ * Detect if text contains a Solana contract address or token ID
+ * @param {string} text - The message text to analyze
+ * @returns {Object} Analysis with detected contract addresses
+ */
+const detectContractAddresses = (text) => {
+  // Solana addresses are Base58 encoded and typically 32-44 characters
+  // They only contain alphanumeric characters excluding 0, O, I, and l to avoid confusion
+  const solanaAddressRegex = /\b[A-HJ-NP-Za-km-z1-9]{32,44}\b/g;
+  const addresses = text.match(solanaAddressRegex) || [];
+  
+  return {
+    hasContractAddress: addresses.length > 0,
+    contractAddresses: addresses,
+    isLikelyMemecoin: addresses.length > 0 && 
+      (text.toLowerCase().includes('pump') || 
+       text.toLowerCase().includes('moon') || 
+       text.toLowerCase().includes('1000x') || 
+       text.toLowerCase().includes('100x') ||
+       text.toLowerCase().includes('ape') ||
+       text.toLowerCase().includes('ca') ||
+       text.toLowerCase().includes('contract') ||
+       text.toLowerCase().includes('degen'))
+  };
+};
+
+/**
  * Analyze message content using OpenAI
  * @param {string} text - The message text to analyze
  * @returns {Object} Analysis results
@@ -75,6 +101,19 @@ const analyzeMessage = async (text) => {
         priceTargets: {}
       };
     }
+    
+    // Check for Solana contract addresses before sending to API
+    const contractInfo = detectContractAddresses(text);
+    
+    // If it contains a contract address, add additional topics and context
+    let additionalTopics = [];
+    if (contractInfo.hasContractAddress) {
+      additionalTopics = ['token_address', 'contract_address'];
+      if (contractInfo.isLikelyMemecoin) {
+        additionalTopics.push('memecoin', 'new_token');
+      }
+      console.log(`Detected ${contractInfo.contractAddresses.length} contract addresses in message`);
+    }
 
     // Enhanced prompt for crypto content with better sentiment detection
     const response = await openai.chat.completions.create({
@@ -82,23 +121,30 @@ const analyzeMessage = async (text) => {
       messages: [
         {
           role: "system",
-          content: `You are an AI specialized in cryptocurrency and trading analysis with strong focus on emotion detection. 
+          content: `You are an AI specialized in cryptocurrency trading analysis with a strong focus on Solana tokens, memecoins, and new token launches.
           
           Analyze the following message and extract:
           1. Overall sentiment (positive, negative, neutral) - be sensitive to profanity, insults, and aggression
           2. Crypto sentiment (bullish, bearish, neutral)
           3. Specific cryptocurrency topics mentioned
-          4. User intent (question, statement, recommendation, etc.)
-          5. Identify any mentioned tokens/coins
+          4. User intent (question, statement, recommendation, trading signal, etc.)
+          5. Identify any mentioned tokens/coins (including new Solana tokens with unusual names)
           6. Detect potential scam indicators (excessive hype, unrealistic promises, urgency, etc.)
           7. Extract any price predictions or targets mentioned
+          8. Identify if the message contains a contract address or token ID
           
-          IMPORTANT SENTIMENT GUIDELINES:
-          - Messages containing insults, profanity, or aggression should ALWAYS be classified as "negative"
+          IMPORTANT NEW CONTEXT GUIDELINES:
+          - The community discusses a lot of Solana memecoin tokens and new token launches
+          - Messages often contain Solana token contract addresses that look like 'Hpfp9q3kzSXaNgP5jchsNkh2FWZpRUDzqYmjGPEMpump'
+          - When you see strings like this, tag them as "token_address" and "memecoin" in topics
+          - Frequent topics include: token launches, presales, pumps, airdrops, memecoins
+          - Common terms: CA (contract address), mint, deploy, WL (whitelist), MC (market cap), degen, ape
+          
+          SENTIMENT GUIDELINES:
+          - Messages containing insults, profanity, or aggression should be classified as "negative"
           - Messages with words like "f*ck", "sh*t", "damn", or similar profanity are negative
-          - Telling someone to "f off" or similar is strongly negative
-          - Dismissive or rude responses should be marked negative
-          - Only mark as neutral if truly neutral with no emotional charge
+          - "Bullish" sentiment means positive expectation for price increase
+          - "Bearish" sentiment means negative expectation for price decrease
           
           Format your response as a JSON object with these fields.`
         },
@@ -157,13 +203,16 @@ const analyzeMessage = async (text) => {
     // Ensure all expected fields exist
     const result = {
       sentiment: parsedResponse.sentiment || 'neutral',
-      topics: Array.isArray(parsedResponse.topics) ? parsedResponse.topics : [],
+      topics: Array.isArray(parsedResponse.topics) ? 
+              [...parsedResponse.topics, ...additionalTopics] : 
+              additionalTopics,
       intent: parsedResponse.intent || 'unknown',
       cryptoSentiment: parsedResponse.cryptoSentiment || parsedResponse["crypto sentiment"] || 'neutral',
       mentionedCoins: Array.isArray(parsedResponse.mentionedCoins) ? parsedResponse.mentionedCoins : 
                      Array.isArray(parsedResponse["mentioned tokens/coins"]) ? parsedResponse["mentioned tokens/coins"] : [],
       scamIndicators: parsedResponse.scamIndicators || [],
-      priceTargets: parsedResponse.priceTargets || {}
+      priceTargets: parsedResponse.priceTargets || {},
+      contractAddresses: contractInfo?.contractAddresses || []
     };
     
     resetErrorCounter();
