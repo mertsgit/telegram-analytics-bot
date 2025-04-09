@@ -38,7 +38,6 @@ const connectDB = async () => {
       socketTimeoutMS: 45000,         // Close sockets after 45 seconds of inactivity
       connectTimeoutMS: 30000,        // Connection attempt timeout
       bufferCommands: true,           // Buffer commands when connection is lost
-      bufferMaxEntries: 0,            // Disable buffer mode
       maxIdleTimeMS: 120000,          // Close connections after 2 minutes of inactivity
       family: 4                       // Use IPv4
     });
@@ -91,6 +90,19 @@ const connectDB = async () => {
       console.error('Could not select a MongoDB server. Please check your connection string and ensure the cluster is running.');
     } else if (error.message.includes('Authentication failed')) {
       console.error('MongoDB authentication failed. Please check your username and password in the connection string.');
+    } else if (error.message.includes('option') && error.message.includes('not supported')) {
+      console.error('MongoDB driver compatibility issue detected. Using simplified connection options.');
+      // Try connecting with minimal options if an option is not supported
+      try {
+        console.log('Attempting simplified MongoDB connection...');
+        await mongoose.connect(process.env.MONGODB_URI);
+        isConnected = true;
+        reconnectAttempts = 0;
+        console.log('MongoDB Connected with simplified options');
+        return true;
+      } catch (simpleConnError) {
+        console.error(`Simplified connection also failed: ${simpleConnError.message}`);
+      }
     }
     
     // Schedule reconnect
