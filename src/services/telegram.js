@@ -787,14 +787,14 @@ _Use /topics for detailed topic analysis_`;
         // Categorize topics
         const categories = {
           memecoin: {
-            name: "🚀 Memecoins & New Tokens",
+            name: "🚀 Memecoin/Shitcoin",
             topics: [],
-            regex: /shib|doge|pepe|wojak|pump|moon|wen|memecoin|meme coin|shitcoin|airdrop|presale|launch|1000x|100x|shill|mint|listing|whale|deploy|contract|CA:?|address|token address|([A-HJ-NP-Za-km-z1-9]{32,44})/i
+            regex: /pump|dump|moon|token|pepe|doge|elon|frog|cat|meme|shit(coin)?|gem|safu|airdrop|presale|mint|launch|jeet|rug|x([0-9]+)|([0-9]+)x|contract address|CA:|ca:|CA :|ca :|[a-zA-Z0-9]{40,}|[A-Za-z0-9]{32,}(pump)|Inu$|AI$/i
           },
           crypto: {
             name: "💰 Cryptocurrency",
             topics: [],
-            regex: /bitcoin|btc|eth|ethereum|crypto|token|blockchain|solana|sol|nft|defi|trading|coin|market|price|bull|bear|wallet|exchange|dex|binance|chainlink|link|cardano|ada|xrp|usdt|usdc|stablecoin/i
+            regex: /bitcoin|btc|eth|ethereum|crypto|blockchain|solana|sol|nft|defi|trading|coin|market|price|bull|bear|wallet|exchange|dex|binance|chainlink|link|cardano|ada|xrp|usdt|usdc|stablecoin|buy|sell|mcap|market ?cap|liquidity|LP|chart|candle|cex/i
           },
           technology: {
             name: "💻 Technology",
@@ -804,7 +804,7 @@ _Use /topics for detailed topic analysis_`;
           finance: {
             name: "📈 Finance/Markets",
             topics: [],
-            regex: /stock|finance|market|investing|investment|fund|bank|money|profit|loss|trader|trading|chart|analysis|buy|sell|portfolio|asset|dividend/i
+            regex: /stock|finance|market|investing|investment|fund|bank|money|profit|loss|trader|analysis|portfolio|asset|dividend|gain|revenue|yield|cash/i
           },
           general: {
             name: "🔍 General Topics",
@@ -931,45 +931,40 @@ _Use /topics for detailed topic analysis_`;
         // Add insights summary
         topicsMessage += `*AI Insights:*\n`;
         
-        // Add memecoin trading activity insight
-        const memecoinTerms = ['pump', 'moon', 'wen', 'memecoin', 'airdrop', 'presale', 'launch', '1000x', '100x', 'shill', 'degen', 'ape'];
+        // Check for contract addresses or apparent token addresses in topics
+        const contractLikeTopics = topics.filter(t => 
+          /^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(t._id) || // Solana-style
+          /^(0x)?[a-fA-F0-9]{40}$/.test(t._id) || // Ethereum-style
+          (/[A-Za-z0-9]{30,}/.test(t._id) && t._id.includes("pump")) // Addresses ending with 'pump'
+        );
+        
+        if (contractLikeTopics.length > 0) {
+          const topContractTopics = contractLikeTopics
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 3)
+            .map(t => escapeTopicMarkdown(t._id.substring(0, 10) + '...' + t._id.substring(t._id.length - 5)))
+            .join(', ');
+          
+          topicsMessage += `• *Contract Activity:* ${contractLikeTopics.length} token contracts mentioned (Top: ${topContractTopics})\n`;
+        }
+        
+        // Analyze memecoin topics
         const memecoinTopics = topics.filter(t => 
-          memecoinTerms.some(term => t._id.toLowerCase().includes(term)) ||
-          t._id === 'memecoin' ||
-          t._id === 'new_token'
+          categories.memecoin.topics.some(mt => mt._id === t._id)
         );
         
         if (memecoinTopics.length > 0) {
-          const topMemecoinTerms = memecoinTopics
-            .slice(0, 3)
-            .map(t => escapeTopicMarkdown(t._id))
-            .join(', ');
-            
-          topicsMessage += `• *Trading Activity:* High memecoin/shitcoin trading activity detected (${topMemecoinTerms})\n`;
-        }
-        
-        // Add token/contract address insight if found
-        const tokenAddressTopics = topics.filter(t => 
-          t._id === 'token_address' || 
-          t._id === 'contract_address' || 
-          /^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(t._id)
-        );
-        
-        if (tokenAddressTopics.length > 0) {
-          topicsMessage += `• *Token Trading Activity:* This group is actively trading memecoins/tokens 🔥\n`;
+          const tradingTerms = ["pump", "moon", "x10", "100x", "buy", "sell", "launch", "mint", "gem"];
+          const tradingActivity = memecoinTopics.filter(t => 
+            tradingTerms.some(term => t._id.toLowerCase().includes(term))
+          );
           
-          // Extract recent token examples if available
-          const addressExamples = topics
-            .filter(t => /^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(t._id))
-            .slice(0, 3)
-            .map(t => t._id.substring(0, 8) + '...' + t._id.substring(t._id.length - 4))
-            .join(', ');
-            
-          if (addressExamples) {
-            topicsMessage += `• *Recent Contract Addresses:* ${addressExamples}\n`;
+          if (tradingActivity.length > 0) {
+            topicsMessage += `• *Trading Activity:* Active trading patterns detected with ${tradingActivity.length} tokens\n`;
           }
         }
         
+        // Regular trending topics
         if (topics.some(t => t.trending === 'up')) {
           const trendingTopics = topics
             .filter(t => t.trending === 'up')
@@ -985,11 +980,11 @@ _Use /topics for detailed topic analysis_`;
         const negativeSentimentTopics = topics.filter(t => t.dominantSentiment === 'negative').length;
         
         if (positiveSentimentTopics > negativeSentimentTopics) {
-          topicsMessage += `• *Sentiment:* Overall positive discussions dominate ${positiveSentimentTopics} topics 😀\n`;
+          topicsMessage += `• *Sentiment Analysis:* Overall positive discussions across ${positiveSentimentTopics} topics\n`;
         } else if (negativeSentimentTopics > positiveSentimentTopics) {
-          topicsMessage += `• *Sentiment:* Several topics (${negativeSentimentTopics}) show negative sentiment 😟\n`;
+          topicsMessage += `• *Sentiment Analysis:* Several topics (${negativeSentimentTopics}) show negative sentiment\n`;
         } else {
-          topicsMessage += `• *Sentiment:* Topics show balanced sentiment overall 😐\n`;
+          topicsMessage += `• *Sentiment Analysis:* Balanced sentiment across discussions\n`;
         }
         
         topicsMessage += `\n_Analysis based on ${totalMentions} topic mentions across ${topics.length} unique topics_`;
@@ -1755,14 +1750,14 @@ _Use /topics for detailed topic analysis_`;
               // Categorize topics
               const categories = {
                 memecoin: {
-                  name: "🚀 Memecoins & New Tokens",
+                  name: "🚀 Memecoin/Shitcoin",
                   topics: [],
-                  regex: /shib|doge|pepe|wojak|pump|moon|wen|memecoin|meme coin|shitcoin|airdrop|presale|launch|1000x|100x|shill|mint|listing|whale|deploy|contract|CA:?|address|token address|([A-HJ-NP-Za-km-z1-9]{32,44})/i
+                  regex: /pump|dump|moon|token|pepe|doge|elon|frog|cat|meme|shit(coin)?|gem|safu|airdrop|presale|mint|launch|jeet|rug|x([0-9]+)|([0-9]+)x|contract address|CA:|ca:|CA :|ca :|[a-zA-Z0-9]{40,}|[A-Za-z0-9]{32,}(pump)|Inu$|AI$/i
                 },
                 crypto: {
                   name: "💰 Cryptocurrency",
                   topics: [],
-                  regex: /bitcoin|btc|eth|ethereum|crypto|token|blockchain|solana|sol|nft|defi|trading|coin|market|price|bull|bear|wallet|exchange|dex|binance|chainlink|link|cardano|ada|xrp|usdt|usdc|stablecoin/i
+                  regex: /bitcoin|btc|eth|ethereum|crypto|blockchain|solana|sol|nft|defi|trading|coin|market|price|bull|bear|wallet|exchange|dex|binance|chainlink|link|cardano|ada|xrp|usdt|usdc|stablecoin|buy|sell|mcap|market ?cap|liquidity|LP|chart|candle|cex/i
                 },
                 technology: {
                   name: "💻 Technology",
@@ -1772,7 +1767,7 @@ _Use /topics for detailed topic analysis_`;
                 finance: {
                   name: "📈 Finance/Markets",
                   topics: [],
-                  regex: /stock|finance|market|investing|investment|fund|bank|money|profit|loss|trader|trading|chart|analysis|buy|sell|portfolio|asset|dividend/i
+                  regex: /stock|finance|market|investing|investment|fund|bank|money|profit|loss|trader|analysis|portfolio|asset|dividend|gain|revenue|yield|cash/i
                 },
                 general: {
                   name: "🔍 General Topics",
@@ -1899,45 +1894,40 @@ _Use /topics for detailed topic analysis_`;
               // Add insights summary
               topicsMessage += `*AI Insights:*\n`;
               
-              // Add memecoin trading activity insight
-              const memecoinTerms = ['pump', 'moon', 'wen', 'memecoin', 'airdrop', 'presale', 'launch', '1000x', '100x', 'shill', 'degen', 'ape'];
+              // Check for contract addresses or apparent token addresses in topics
+              const contractLikeTopics = topics.filter(t => 
+                /^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(t._id) || // Solana-style
+                /^(0x)?[a-fA-F0-9]{40}$/.test(t._id) || // Ethereum-style
+                (/[A-Za-z0-9]{30,}/.test(t._id) && t._id.includes("pump")) // Addresses ending with 'pump'
+              );
+              
+              if (contractLikeTopics.length > 0) {
+                const topContractTopics = contractLikeTopics
+                  .sort((a, b) => b.count - a.count)
+                  .slice(0, 3)
+                  .map(t => escapeTopicMarkdown(t._id.substring(0, 10) + '...' + t._id.substring(t._id.length - 5)))
+                  .join(', ');
+                
+                topicsMessage += `• *Contract Activity:* ${contractLikeTopics.length} token contracts mentioned (Top: ${topContractTopics})\n`;
+              }
+              
+              // Analyze memecoin topics
               const memecoinTopics = topics.filter(t => 
-                memecoinTerms.some(term => t._id.toLowerCase().includes(term)) ||
-                t._id === 'memecoin' ||
-                t._id === 'new_token'
+                categories.memecoin.topics.some(mt => mt._id === t._id)
               );
               
               if (memecoinTopics.length > 0) {
-                const topMemecoinTerms = memecoinTopics
-                  .slice(0, 3)
-                  .map(t => escapeTopicMarkdown(t._id))
-                  .join(', ');
-                  
-                topicsMessage += `• *Trading Activity:* High memecoin/shitcoin trading activity detected (${topMemecoinTerms})\n`;
-              }
-              
-              // Add token/contract address insight if found
-              const tokenAddressTopics = topics.filter(t => 
-                t._id === 'token_address' || 
-                t._id === 'contract_address' || 
-                /^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(t._id)
-              );
-              
-              if (tokenAddressTopics.length > 0) {
-                topicsMessage += `• *Token Trading Activity:* This group is actively trading memecoins/tokens 🔥\n`;
+                const tradingTerms = ["pump", "moon", "x10", "100x", "buy", "sell", "launch", "mint", "gem"];
+                const tradingActivity = memecoinTopics.filter(t => 
+                  tradingTerms.some(term => t._id.toLowerCase().includes(term))
+                );
                 
-                // Extract recent token examples if available
-                const addressExamples = topics
-                  .filter(t => /^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(t._id))
-                  .slice(0, 3)
-                  .map(t => t._id.substring(0, 8) + '...' + t._id.substring(t._id.length - 4))
-                  .join(', ');
-                  
-                if (addressExamples) {
-                  topicsMessage += `• *Recent Contract Addresses:* ${addressExamples}\n`;
+                if (tradingActivity.length > 0) {
+                  topicsMessage += `• *Trading Activity:* Active trading patterns detected with ${tradingActivity.length} tokens\n`;
                 }
               }
               
+              // Regular trending topics
               if (topics.some(t => t.trending === 'up')) {
                 const trendingTopics = topics
                   .filter(t => t.trending === 'up')
@@ -1953,11 +1943,11 @@ _Use /topics for detailed topic analysis_`;
               const negativeSentimentTopics = topics.filter(t => t.dominantSentiment === 'negative').length;
               
               if (positiveSentimentTopics > negativeSentimentTopics) {
-                topicsMessage += `• *Sentiment:* Overall positive discussions dominate ${positiveSentimentTopics} topics 😀\n`;
+                topicsMessage += `• *Sentiment Analysis:* Overall positive discussions across ${positiveSentimentTopics} topics\n`;
               } else if (negativeSentimentTopics > positiveSentimentTopics) {
-                topicsMessage += `• *Sentiment:* Several topics (${negativeSentimentTopics}) show negative sentiment 😟\n`;
+                topicsMessage += `• *Sentiment Analysis:* Several topics (${negativeSentimentTopics}) show negative sentiment\n`;
               } else {
-                topicsMessage += `• *Sentiment:* Topics show balanced sentiment overall 😐\n`;
+                topicsMessage += `• *Sentiment Analysis:* Balanced sentiment across discussions\n`;
               }
               
               topicsMessage += `\n_Analysis based on ${totalMentions} topic mentions across ${topics.length} unique topics_`;
