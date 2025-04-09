@@ -789,12 +789,12 @@ _Use /topics for detailed topic analysis_`;
           memecoin: {
             name: "🚀 Memecoin/Shitcoin",
             topics: [],
-            regex: /pump|dump|moon|token|pepe|doge|elon|frog|cat|meme|shit(coin)?|gem|safu|airdrop|presale|mint|launch|jeet|rug|x([0-9]+)|([0-9]+)x|contract address|CA:|ca:|CA :|ca :|[a-zA-Z0-9]{40,}|[A-Za-z0-9]{32,}(pump)|Inu$|AI$/i
+            regex: /pump|dump|moon|token|pepe|doge|elon|frog|cat|meme|shit(coin)?|gem|safu|airdrop|presale|mint|launch|jeet|rug|x([0-9]+)|([0-9]+)x|contract address|CA:|ca:|CA :|ca :|([A-HJ-NP-Za-km-z1-9]{32,44})|(0x[a-fA-F0-9]{40})|[a-zA-Z0-9]{40,}|[A-Za-z0-9]{32,}(pump)|Inu$|AI$|meme|coin|solana|sol|degen|cope|ngmi|wagmi|fud|hodl|hodler|paperhands|diamond hands|shill|mooning|ath|floor|flipping|flipped/i
           },
           crypto: {
             name: "💰 Cryptocurrency",
             topics: [],
-            regex: /bitcoin|btc|eth|ethereum|crypto|blockchain|solana|sol|nft|defi|trading|coin|market|price|bull|bear|wallet|exchange|dex|binance|chainlink|link|cardano|ada|xrp|usdt|usdc|stablecoin|buy|sell|mcap|market ?cap|liquidity|LP|chart|candle|cex/i
+            regex: /bitcoin|btc|eth|ethereum|crypto|blockchain|solana|sol|nft|defi|trading|coin|market|price|bull|bear|wallet|exchange|dex|binance|chainlink|link|cardano|ada|xrp|usdt|usdc|stablecoin|buy|sell|mcap|market ?cap|liquidity|LP|chart|candle|cex|volume|resistance|support|trend|breakout|reversal|correction|ath|consolidation|accumulation|distribution|whale|ta|technical analysis|fa|fundamental analysis/i
           },
           technology: {
             name: "💻 Technology",
@@ -811,6 +811,31 @@ _Use /topics for detailed topic analysis_`;
             topics: []
           }
         };
+        
+        // Helper function to check if a topic is likely a contract address
+        const isContractAddress = (topicId) => {
+          // Solana addresses (base58 encoded, 32-44 chars)
+          if (/^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(topicId)) {
+            return true;
+          }
+          // Ethereum style addresses (0x followed by 40 hex chars)
+          if (/^(0x)?[a-fA-F0-9]{40}$/.test(topicId)) {
+            return true;
+          }
+          // Memecoin contract addresses often have "pump" in them
+          if (/^[A-Za-z0-9]{30,}pump$/i.test(topicId)) {
+            return true;
+          }
+          return false;
+        };
+
+        // Pre-process topics to identify contract addresses
+        topics.forEach(topic => {
+          if (isContractAddress(topic._id)) {
+            topic.isContract = true;
+            topic.contractType = topic._id.startsWith('0x') ? 'ethereum' : 'solana';
+          }
+        });
         
         // Categorize each topic
         topics.forEach(topic => {
@@ -932,35 +957,55 @@ _Use /topics for detailed topic analysis_`;
         topicsMessage += `*AI Insights:*\n`;
         
         // Check for contract addresses or apparent token addresses in topics
-        const contractLikeTopics = topics.filter(t => 
-          /^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(t._id) || // Solana-style
-          /^(0x)?[a-fA-F0-9]{40}$/.test(t._id) || // Ethereum-style
-          (/[A-Za-z0-9]{30,}/.test(t._id) && t._id.includes("pump")) // Addresses ending with 'pump'
-        );
+        const contractLikeTopics = topics.filter(t => isContractAddress(t._id));
         
         if (contractLikeTopics.length > 0) {
           const topContractTopics = contractLikeTopics
             .sort((a, b) => b.count - a.count)
             .slice(0, 3)
-            .map(t => escapeTopicMarkdown(t._id.substring(0, 10) + '...' + t._id.substring(t._id.length - 5)))
+            .map(t => {
+              // Format contract addresses for readability
+              const addr = t._id;
+              return escapeTopicMarkdown(addr.substring(0, 8) + '...' + addr.substring(addr.length - 5));
+            })
             .join(', ');
           
-          topicsMessage += `• *Contract Activity:* ${contractLikeTopics.length} token contracts mentioned (Top: ${topContractTopics})\n`;
+          const solanaCount = contractLikeTopics.filter(t => !t._id.startsWith('0x')).length;
+          const ethereumCount = contractLikeTopics.filter(t => t._id.startsWith('0x')).length;
+          
+          topicsMessage += `• *Token Activity:* ${contractLikeTopics.length} contract addresses mentioned (${solanaCount} Solana, ${ethereumCount} Ethereum)\n`;
+          topicsMessage += `• *Top Tokens:* ${topContractTopics}\n`;
         }
         
-        // Analyze memecoin topics
+        // Analyze memecoin topics for trading patterns
         const memecoinTopics = topics.filter(t => 
-          categories.memecoin.topics.some(mt => mt._id === t._id)
+          categories.memecoin.regex.test(t._id)
         );
         
         if (memecoinTopics.length > 0) {
-          const tradingTerms = ["pump", "moon", "x10", "100x", "buy", "sell", "launch", "mint", "gem"];
+          const tradingTerms = ["pump", "moon", "x10", "100x", "buy", "sell", "launch", "mint", "gem", "ath", "floor"];
           const tradingActivity = memecoinTopics.filter(t => 
             tradingTerms.some(term => t._id.toLowerCase().includes(term))
           );
           
           if (tradingActivity.length > 0) {
-            topicsMessage += `• *Trading Activity:* Active trading patterns detected with ${tradingActivity.length} tokens\n`;
+            const tradingVolume = tradingActivity.reduce((sum, t) => sum + t.count, 0);
+            const mostActive = tradingActivity.sort((a, b) => b.count - a.count)[0]?._id || '';
+            
+            topicsMessage += `• *Trading Activity:* ${tradingActivity.length} tokens with ${tradingVolume} trading signals\n`;
+            if (mostActive && !isContractAddress(mostActive)) {
+              topicsMessage += `• *Hottest Token:* ${escapeTopicMarkdown(mostActive)}\n`;
+            }
+          }
+          
+          // Detect potential new launches
+          const launchTerms = ["launch", "presale", "mint", "airdrop", "new"];
+          const launchActivity = memecoinTopics.filter(t => 
+            launchTerms.some(term => t._id.toLowerCase().includes(term))
+          );
+          
+          if (launchActivity.length > 0) {
+            topicsMessage += `• *Launch Activity:* ${launchActivity.length} potential new token launches detected\n`;
           }
         }
         
@@ -1752,12 +1797,12 @@ _Use /topics for detailed topic analysis_`;
                 memecoin: {
                   name: "🚀 Memecoin/Shitcoin",
                   topics: [],
-                  regex: /pump|dump|moon|token|pepe|doge|elon|frog|cat|meme|shit(coin)?|gem|safu|airdrop|presale|mint|launch|jeet|rug|x([0-9]+)|([0-9]+)x|contract address|CA:|ca:|CA :|ca :|[a-zA-Z0-9]{40,}|[A-Za-z0-9]{32,}(pump)|Inu$|AI$/i
+                  regex: /pump|dump|moon|token|pepe|doge|elon|frog|cat|meme|shit(coin)?|gem|safu|airdrop|presale|mint|launch|jeet|rug|x([0-9]+)|([0-9]+)x|contract address|CA:|ca:|CA :|ca :|([A-HJ-NP-Za-km-z1-9]{32,44})|(0x[a-fA-F0-9]{40})|[a-zA-Z0-9]{40,}|[A-Za-z0-9]{32,}(pump)|Inu$|AI$|meme|coin|solana|sol|degen|cope|ngmi|wagmi|fud|hodl|hodler|paperhands|diamond hands|shill|mooning|ath|floor|flipping|flipped/i
                 },
                 crypto: {
                   name: "💰 Cryptocurrency",
                   topics: [],
-                  regex: /bitcoin|btc|eth|ethereum|crypto|blockchain|solana|sol|nft|defi|trading|coin|market|price|bull|bear|wallet|exchange|dex|binance|chainlink|link|cardano|ada|xrp|usdt|usdc|stablecoin|buy|sell|mcap|market ?cap|liquidity|LP|chart|candle|cex/i
+                  regex: /bitcoin|btc|eth|ethereum|crypto|blockchain|solana|sol|nft|defi|trading|coin|market|price|bull|bear|wallet|exchange|dex|binance|chainlink|link|cardano|ada|xrp|usdt|usdc|stablecoin|buy|sell|mcap|market ?cap|liquidity|LP|chart|candle|cex|volume|resistance|support|trend|breakout|reversal|correction|ath|consolidation|accumulation|distribution|whale|ta|technical analysis|fa|fundamental analysis/i
                 },
                 technology: {
                   name: "💻 Technology",
@@ -1774,6 +1819,31 @@ _Use /topics for detailed topic analysis_`;
                   topics: []
                 }
               };
+              
+              // Helper function to check if a topic is likely a contract address
+              const isContractAddress = (topicId) => {
+                // Solana addresses (base58 encoded, 32-44 chars)
+                if (/^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(topicId)) {
+                  return true;
+                }
+                // Ethereum style addresses (0x followed by 40 hex chars)
+                if (/^(0x)?[a-fA-F0-9]{40}$/.test(topicId)) {
+                  return true;
+                }
+                // Memecoin contract addresses often have "pump" in them
+                if (/^[A-Za-z0-9]{30,}pump$/i.test(topicId)) {
+                  return true;
+                }
+                return false;
+              };
+
+              // Pre-process topics to identify contract addresses
+              topics.forEach(topic => {
+                if (isContractAddress(topic._id)) {
+                  topic.isContract = true;
+                  topic.contractType = topic._id.startsWith('0x') ? 'ethereum' : 'solana';
+                }
+              });
               
               // Categorize each topic
               topics.forEach(topic => {
@@ -1895,35 +1965,55 @@ _Use /topics for detailed topic analysis_`;
               topicsMessage += `*AI Insights:*\n`;
               
               // Check for contract addresses or apparent token addresses in topics
-              const contractLikeTopics = topics.filter(t => 
-                /^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(t._id) || // Solana-style
-                /^(0x)?[a-fA-F0-9]{40}$/.test(t._id) || // Ethereum-style
-                (/[A-Za-z0-9]{30,}/.test(t._id) && t._id.includes("pump")) // Addresses ending with 'pump'
-              );
+              const contractLikeTopics = topics.filter(t => isContractAddress(t._id));
               
               if (contractLikeTopics.length > 0) {
                 const topContractTopics = contractLikeTopics
                   .sort((a, b) => b.count - a.count)
                   .slice(0, 3)
-                  .map(t => escapeTopicMarkdown(t._id.substring(0, 10) + '...' + t._id.substring(t._id.length - 5)))
+                  .map(t => {
+                    // Format contract addresses for readability
+                    const addr = t._id;
+                    return escapeTopicMarkdown(addr.substring(0, 8) + '...' + addr.substring(addr.length - 5));
+                  })
                   .join(', ');
                 
-                topicsMessage += `• *Contract Activity:* ${contractLikeTopics.length} token contracts mentioned (Top: ${topContractTopics})\n`;
+                const solanaCount = contractLikeTopics.filter(t => !t._id.startsWith('0x')).length;
+                const ethereumCount = contractLikeTopics.filter(t => t._id.startsWith('0x')).length;
+                
+                topicsMessage += `• *Token Activity:* ${contractLikeTopics.length} contract addresses mentioned (${solanaCount} Solana, ${ethereumCount} Ethereum)\n`;
+                topicsMessage += `• *Top Tokens:* ${topContractTopics}\n`;
               }
               
-              // Analyze memecoin topics
+              // Analyze memecoin topics for trading patterns
               const memecoinTopics = topics.filter(t => 
-                categories.memecoin.topics.some(mt => mt._id === t._id)
+                categories.memecoin.regex.test(t._id)
               );
               
               if (memecoinTopics.length > 0) {
-                const tradingTerms = ["pump", "moon", "x10", "100x", "buy", "sell", "launch", "mint", "gem"];
+                const tradingTerms = ["pump", "moon", "x10", "100x", "buy", "sell", "launch", "mint", "gem", "ath", "floor"];
                 const tradingActivity = memecoinTopics.filter(t => 
                   tradingTerms.some(term => t._id.toLowerCase().includes(term))
                 );
                 
                 if (tradingActivity.length > 0) {
-                  topicsMessage += `• *Trading Activity:* Active trading patterns detected with ${tradingActivity.length} tokens\n`;
+                  const tradingVolume = tradingActivity.reduce((sum, t) => sum + t.count, 0);
+                  const mostActive = tradingActivity.sort((a, b) => b.count - a.count)[0]?._id || '';
+                  
+                  topicsMessage += `• *Trading Activity:* ${tradingActivity.length} tokens with ${tradingVolume} trading signals\n`;
+                  if (mostActive && !isContractAddress(mostActive)) {
+                    topicsMessage += `• *Hottest Token:* ${escapeTopicMarkdown(mostActive)}\n`;
+                  }
+                }
+                
+                // Detect potential new launches
+                const launchTerms = ["launch", "presale", "mint", "airdrop", "new"];
+                const launchActivity = memecoinTopics.filter(t => 
+                  launchTerms.some(term => t._id.toLowerCase().includes(term))
+                );
+                
+                if (launchActivity.length > 0) {
+                  topicsMessage += `• *Launch Activity:* ${launchActivity.length} potential new token launches detected\n`;
                 }
               }
               
