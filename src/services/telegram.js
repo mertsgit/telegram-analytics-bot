@@ -1,7 +1,7 @@
 const { Telegraf } = require('telegraf');
 const Message = require('../models/Message');
 const { analyzeMessage, isOpenAIServiceAvailable, getOpenAIErrorStatus } = require('./openai');
-const { isDBConnected } = require('../config/database');
+const { isDBConnected, forceReconnect } = require('../config/database');
 const axios = require('axios');
 require('dotenv').config();
 
@@ -547,8 +547,14 @@ _You can use commands like /stats, /topics and /leaderboard in private chat with
 
         // Check if database is connected
         if (!isDBConnected()) {
-          console.error('Stats command failed: Database not connected');
-          return await ctx.reply('⚠️ Database connection is unavailable. Stats cannot be retrieved at this time.');
+          // Try to force a reconnection before failing
+          const reconnected = await forceReconnect();
+          
+          if (!reconnected) {
+            return await ctx.reply('⚠️ Database connection is unavailable. Stats cannot be retrieved at this time.');
+          } else {
+            await ctx.reply('✅ Database connection restored. Generating stats...');
+          }
         }
 
         // Only enforce group chat type check if not in private chat mode
@@ -734,8 +740,14 @@ _Use /topics for detailed topic analysis_`;
 
         // Check if database is connected
         if (!isDBConnected()) {
-          console.error('Topics command failed: Database not connected');
-          return await ctx.reply('⚠️ Database connection is unavailable. Topics cannot be retrieved at this time.');
+          // Try to force a reconnection before failing
+          const reconnected = await forceReconnect();
+          
+          if (!reconnected) {
+            return await ctx.reply('⚠️ Database connection is unavailable. Topics cannot be retrieved at this time.');
+          } else {
+            await ctx.reply('✅ Database connection restored. Generating topic analysis...');
+          }
         }
 
         // Only enforce group chat type check if not in private chat mode
@@ -1131,8 +1143,14 @@ _Data from CoinGecko_
 
         // Check if database is connected
         if (!isDBConnected()) {
-          console.error('Leaderboard command failed: Database not connected');
-          return await ctx.reply('⚠️ Database connection is unavailable. Leaderboard cannot be retrieved at this time.');
+          // Try to force a reconnection before failing
+          const reconnected = await forceReconnect();
+          
+          if (!reconnected) {
+            return await ctx.reply('⚠️ Database connection is unavailable. Leaderboard cannot be retrieved at this time.');
+          } else {
+            await ctx.reply('✅ Database connection restored. Generating leaderboard...');
+          }
         }
 
         // Only enforce group chat type check if not in private chat mode
@@ -1305,10 +1323,19 @@ ${leaderboardEntries}
         }
         // --- End Authorization Check ---
         
-        // Skip if database is not connected
+        // Check if database is connected - try to reconnect if necessary
         if (!isDBConnected()) {
-          console.log(`Skipping message processing: Database not connected (Chat: ${ctx.chat.title})`);
-          return;
+          console.log(`Database disconnected while processing message in chat: ${ctx.chat.title}`);
+          
+          // Try to force a reconnection before skipping the message
+          const reconnected = await forceReconnect();
+          
+          if (!reconnected) {
+            console.log(`Skipping message processing: Database reconnection failed (Chat: ${ctx.chat.title})`);
+            return;
+          } else {
+            console.log(`Successfully reconnected to database. Continuing message processing.`);
+          }
         }
 
         // Skip non-text messages
@@ -1537,7 +1564,14 @@ ${leaderboardEntries}
               
               // Check if database is connected
               if (!isDBConnected()) {
-                return await ctx.reply('⚠️ Database connection is unavailable. Stats cannot be retrieved at this time.');
+                // Try to force a reconnection before failing
+                const reconnected = await forceReconnect();
+                
+                if (!reconnected) {
+                  return await ctx.reply('⚠️ Database connection is unavailable. Stats cannot be retrieved at this time.');
+                } else {
+                  await ctx.reply('✅ Database connection restored. Generating stats...');
+                }
               }
               
               // Convert the group ID to the right format for database queries
@@ -1639,7 +1673,14 @@ _Use /topics for detailed topic analysis_`;
               
               // Check if database is connected
               if (!isDBConnected()) {
-                return await ctx.reply('⚠️ Database connection is unavailable. Topics cannot be retrieved at this time.');
+                // Try to force a reconnection before failing
+                const reconnected = await forceReconnect();
+                
+                if (!reconnected) {
+                  return await ctx.reply('⚠️ Database connection is unavailable. Topics cannot be retrieved at this time.');
+                } else {
+                  await ctx.reply('✅ Database connection restored. Generating topic analysis...');
+                }
               }
               
               // Get topics using the static method
@@ -1845,7 +1886,14 @@ _Use /topics for detailed topic analysis_`;
               
               // Check if database is connected
               if (!isDBConnected()) {
-                return await ctx.reply('⚠️ Database connection is unavailable. Leaderboard cannot be retrieved at this time.');
+                // Try to force a reconnection before failing
+                const reconnected = await forceReconnect();
+                
+                if (!reconnected) {
+                  return await ctx.reply('⚠️ Database connection is unavailable. Leaderboard cannot be retrieved at this time.');
+                } else {
+                  await ctx.reply('✅ Database connection restored. Generating leaderboard...');
+                }
               }
               
               // Send a processing message
@@ -2060,6 +2108,29 @@ _Data from CoinGecko_
     if (!botLaunched) {
       return false;
     }
+    
+    // Set up a periodic database connection check to keep connection alive
+    const DB_CHECK_INTERVAL = 30 * 60 * 1000; // 30 minutes
+    console.log(`Setting up periodic database connection check every ${DB_CHECK_INTERVAL/60000} minutes`);
+    
+    setInterval(async () => {
+      console.log('Performing periodic database connection check...');
+      if (!isDBConnected()) {
+        console.log('Database connection lost during periodic check. Attempting to reconnect...');
+        await forceReconnect();
+      } else {
+        console.log('Database connection is healthy.');
+        
+        // Ping the database to keep the connection alive
+        try {
+          await Message.findOne().limit(1).exec();
+          console.log('Database ping successful.');
+        } catch (err) {
+          console.error('Error pinging database:', err.message);
+          await forceReconnect();
+        }
+      }
+    }, DB_CHECK_INTERVAL);
     
     // Enable graceful stop
     process.once('SIGINT', () => {
