@@ -787,27 +787,27 @@ _Use /topics for detailed topic analysis_`;
         // Categorize topics
         const categories = {
           memecoin: {
-            name: "🚀 Memecoin/Shitcoin",
+            name: "Memecoin/Shitcoin",
             topics: [],
             regex: /pump|dump|moon|token|pepe|doge|elon|frog|cat|meme|shit(coin)?|gem|safu|airdrop|presale|mint|launch|jeet|rug|x([0-9]+)|([0-9]+)x|contract address|CA:|ca:|CA :|ca :|([A-HJ-NP-Za-km-z1-9]{32,44})|(0x[a-fA-F0-9]{40})|[a-zA-Z0-9]{40,}|[A-Za-z0-9]{32,}(pump)|Inu$|AI$|meme|coin|solana|sol|degen|cope|ngmi|wagmi|fud|hodl|hodler|paperhands|diamond hands|shill|mooning|ath|floor|flipping|flipped/i
           },
           crypto: {
-            name: "💰 Cryptocurrency",
+            name: "Cryptocurrency",
             topics: [],
             regex: /bitcoin|btc|eth|ethereum|crypto|blockchain|solana|sol|nft|defi|trading|coin|market|price|bull|bear|wallet|exchange|dex|binance|chainlink|link|cardano|ada|xrp|usdt|usdc|stablecoin|buy|sell|mcap|market ?cap|liquidity|LP|chart|candle|cex|volume|resistance|support|trend|breakout|reversal|correction|ath|consolidation|accumulation|distribution|whale|ta|technical analysis|fa|fundamental analysis/i
           },
           technology: {
-            name: "💻 Technology",
+            name: "Technology",
             topics: [],
             regex: /tech|software|hardware|web|app|code|developer|programming|ai|computer|internet|mobile|website|digital|online|device|gadget|electronics/i
           },
           finance: {
-            name: "📈 Finance/Markets",
+            name: "Finance/Markets",
             topics: [],
             regex: /stock|finance|market|investing|investment|fund|bank|money|profit|loss|trader|analysis|portfolio|asset|dividend|gain|revenue|yield|cash/i
           },
           general: {
-            name: "🔍 General Topics",
+            name: "General Topics",
             topics: []
           }
         };
@@ -852,22 +852,22 @@ _Use /topics for detailed topic analysis_`;
           }
         });
         
-        // Helper function to format sentiment emoji
+        // Helper function to format sentiment emoji (replaced with text)
         const getSentimentEmoji = (sentiment) => {
           switch(sentiment) {
-            case 'positive': return '😀';
-            case 'negative': return '😟';
-            case 'neutral': return '😐';
-            default: return '🔄';
+            case 'positive': return 'positive';
+            case 'negative': return 'negative';
+            case 'neutral': return 'neutral';
+            default: return 'unknown';
           }
         };
         
-        // Helper function to format trending indicator
+        // Helper function to format trending indicator (replaced with text)
         const getTrendingEmoji = (trending) => {
           switch(trending) {
-            case 'up': return '📈';
-            case 'down': return '📉';
-            default: return '➖';
+            case 'up': return 'TREND UP';
+            case 'down': return 'TREND DOWN';
+            default: return 'STABLE';
           }
         };
         
@@ -878,7 +878,7 @@ _Use /topics for detailed topic analysis_`;
         };
         
         // Build message with categories and enhanced analysis
-        let topicsMessage = `📊 *Advanced Topic Analysis for "${escapeTopicMarkdown(ctx.chat.title)}"*\n\n`;
+        let topicsMessage = `Advanced Topic Analysis for "${escapeTopicMarkdown(ctx.chat.title)}"\n\n`;
         
         // Find total topic mentions for percentages
         const totalMentions = topics.reduce((sum, topic) => sum + topic.count, 0);
@@ -891,7 +891,7 @@ _Use /topics for detailed topic analysis_`;
             topicsMessage += `*${category.name}*`;
             
             if (mostDiscussed.trending === 'up') {
-              topicsMessage += ` 🔥 Trending!`;
+              topicsMessage += ` [TRENDING]`;
             }
             
             topicsMessage += `\n`;
@@ -911,7 +911,7 @@ _Use /topics for detailed topic analysis_`;
               }
               
               if (topic.dominantSentiment) {
-                topicsMessage += `   • Sentiment: ${getSentimentEmoji(topic.dominantSentiment)} ${topic.dominantSentiment}\n`;
+                topicsMessage += `   • Sentiment: ${getSentimentEmoji(topic.dominantSentiment)}\n`;
               }
               
               // Show related topics if available
@@ -973,8 +973,8 @@ _Use /topics for detailed topic analysis_`;
           const solanaCount = contractLikeTopics.filter(t => !t._id.startsWith('0x')).length;
           const ethereumCount = contractLikeTopics.filter(t => t._id.startsWith('0x')).length;
           
-          topicsMessage += `• *Token Activity:* ${contractLikeTopics.length} contract addresses mentioned (${solanaCount} Solana, ${ethereumCount} Ethereum)\n`;
-          topicsMessage += `• *Top Tokens:* ${topContractTopics}\n`;
+          topicsMessage += `- *Token Activity:* ${contractLikeTopics.length} contract addresses mentioned (${solanaCount} Solana, ${ethereumCount} Ethereum)\n`;
+          topicsMessage += `- *Top Tokens:* ${topContractTopics}\n`;
         }
         
         // Analyze memecoin topics for trading patterns
@@ -992,9 +992,9 @@ _Use /topics for detailed topic analysis_`;
             const tradingVolume = tradingActivity.reduce((sum, t) => sum + t.count, 0);
             const mostActive = tradingActivity.sort((a, b) => b.count - a.count)[0]?._id || '';
             
-            topicsMessage += `• *Trading Activity:* ${tradingActivity.length} tokens with ${tradingVolume} trading signals\n`;
+            topicsMessage += `- *Trading Activity:* ${tradingActivity.length} tokens with ${tradingVolume} trading signals\n`;
             if (mostActive && !isContractAddress(mostActive)) {
-              topicsMessage += `• *Hottest Token:* ${escapeTopicMarkdown(mostActive)}\n`;
+              topicsMessage += `- *Hottest Token:* ${escapeTopicMarkdown(mostActive)}\n`;
             }
           }
           
@@ -1005,7 +1005,7 @@ _Use /topics for detailed topic analysis_`;
           );
           
           if (launchActivity.length > 0) {
-            topicsMessage += `• *Launch Activity:* ${launchActivity.length} potential new token launches detected\n`;
+            topicsMessage += `- *Launch Activity:* ${launchActivity.length} potential new token launches detected\n`;
           }
         }
         
@@ -1017,7 +1017,7 @@ _Use /topics for detailed topic analysis_`;
             .slice(0, 3)
             .join(', ');
           
-          topicsMessage += `• *Trending Discussions:* ${trendingTopics}\n`;
+          topicsMessage += `- *Trending Discussions:* ${trendingTopics}\n`;
         }
         
         // Add sentiment overview
@@ -1025,11 +1025,11 @@ _Use /topics for detailed topic analysis_`;
         const negativeSentimentTopics = topics.filter(t => t.dominantSentiment === 'negative').length;
         
         if (positiveSentimentTopics > negativeSentimentTopics) {
-          topicsMessage += `• *Sentiment Analysis:* Overall positive discussions across ${positiveSentimentTopics} topics\n`;
+          topicsMessage += `- *Sentiment Analysis:* Overall positive discussions across ${positiveSentimentTopics} topics\n`;
         } else if (negativeSentimentTopics > positiveSentimentTopics) {
-          topicsMessage += `• *Sentiment Analysis:* Several topics (${negativeSentimentTopics}) show negative sentiment\n`;
+          topicsMessage += `- *Sentiment Analysis:* Several topics (${negativeSentimentTopics}) show negative sentiment\n`;
         } else {
-          topicsMessage += `• *Sentiment Analysis:* Balanced sentiment across discussions\n`;
+          topicsMessage += `- *Sentiment Analysis:* Balanced sentiment across discussions\n`;
         }
         
         topicsMessage += `\n_Analysis based on ${totalMentions} topic mentions across ${topics.length} unique topics_`;
@@ -1795,27 +1795,27 @@ _Use /topics for detailed topic analysis_`;
               // Categorize topics
               const categories = {
                 memecoin: {
-                  name: "🚀 Memecoin/Shitcoin",
+                  name: "Memecoin/Shitcoin",
                   topics: [],
                   regex: /pump|dump|moon|token|pepe|doge|elon|frog|cat|meme|shit(coin)?|gem|safu|airdrop|presale|mint|launch|jeet|rug|x([0-9]+)|([0-9]+)x|contract address|CA:|ca:|CA :|ca :|([A-HJ-NP-Za-km-z1-9]{32,44})|(0x[a-fA-F0-9]{40})|[a-zA-Z0-9]{40,}|[A-Za-z0-9]{32,}(pump)|Inu$|AI$|meme|coin|solana|sol|degen|cope|ngmi|wagmi|fud|hodl|hodler|paperhands|diamond hands|shill|mooning|ath|floor|flipping|flipped/i
                 },
                 crypto: {
-                  name: "💰 Cryptocurrency",
+                  name: "Cryptocurrency",
                   topics: [],
                   regex: /bitcoin|btc|eth|ethereum|crypto|blockchain|solana|sol|nft|defi|trading|coin|market|price|bull|bear|wallet|exchange|dex|binance|chainlink|link|cardano|ada|xrp|usdt|usdc|stablecoin|buy|sell|mcap|market ?cap|liquidity|LP|chart|candle|cex|volume|resistance|support|trend|breakout|reversal|correction|ath|consolidation|accumulation|distribution|whale|ta|technical analysis|fa|fundamental analysis/i
                 },
                 technology: {
-                  name: "💻 Technology",
+                  name: "Technology",
                   topics: [],
                   regex: /tech|software|hardware|web|app|code|developer|programming|ai|computer|internet|mobile|website|digital|online|device|gadget|electronics/i
                 },
                 finance: {
-                  name: "📈 Finance/Markets",
+                  name: "Finance/Markets",
                   topics: [],
                   regex: /stock|finance|market|investing|investment|fund|bank|money|profit|loss|trader|analysis|portfolio|asset|dividend|gain|revenue|yield|cash/i
                 },
                 general: {
-                  name: "🔍 General Topics",
+                  name: "General Topics",
                   topics: []
                 }
               };
@@ -1860,22 +1860,22 @@ _Use /topics for detailed topic analysis_`;
                 }
               });
               
-              // Helper function to format sentiment emoji
+              // Helper function to format sentiment emoji (replaced with text)
               const getSentimentEmoji = (sentiment) => {
                 switch(sentiment) {
-                  case 'positive': return '😀';
-                  case 'negative': return '😟';
-                  case 'neutral': return '😐';
-                  default: return '🔄';
+                  case 'positive': return 'positive';
+                  case 'negative': return 'negative';
+                  case 'neutral': return 'neutral';
+                  default: return 'unknown';
                 }
               };
               
-              // Helper function to format trending indicator
+              // Helper function to format trending indicator (replaced with text)
               const getTrendingEmoji = (trending) => {
                 switch(trending) {
-                  case 'up': return '📈';
-                  case 'down': return '📉';
-                  default: return '➖';
+                  case 'up': return 'TREND UP';
+                  case 'down': return 'TREND DOWN';
+                  default: return 'STABLE';
                 }
               };
               
@@ -1886,7 +1886,7 @@ _Use /topics for detailed topic analysis_`;
               };
               
               // Build message with categories and enhanced analysis
-              let topicsMessage = `📊 *Advanced Topic Analysis for "${escapeTopicMarkdown(chatTitle)}"*\n\n`;
+              let topicsMessage = `Advanced Topic Analysis for "${escapeTopicMarkdown(chatTitle)}"\n\n`;
               
               // Find total topic mentions for percentages
               const totalMentions = topics.reduce((sum, topic) => sum + topic.count, 0);
@@ -1899,7 +1899,7 @@ _Use /topics for detailed topic analysis_`;
                   topicsMessage += `*${category.name}*`;
                   
                   if (mostDiscussed.trending === 'up') {
-                    topicsMessage += ` 🔥 Trending!`;
+                    topicsMessage += ` [TRENDING]`;
                   }
                   
                   topicsMessage += `\n`;
@@ -1919,7 +1919,7 @@ _Use /topics for detailed topic analysis_`;
                     }
                     
                     if (topic.dominantSentiment) {
-                      topicsMessage += `   • Sentiment: ${getSentimentEmoji(topic.dominantSentiment)} ${topic.dominantSentiment}\n`;
+                      topicsMessage += `   • Sentiment: ${getSentimentEmoji(topic.dominantSentiment)}\n`;
                     }
                     
                     // Show related topics if available
@@ -1981,8 +1981,8 @@ _Use /topics for detailed topic analysis_`;
                 const solanaCount = contractLikeTopics.filter(t => !t._id.startsWith('0x')).length;
                 const ethereumCount = contractLikeTopics.filter(t => t._id.startsWith('0x')).length;
                 
-                topicsMessage += `• *Token Activity:* ${contractLikeTopics.length} contract addresses mentioned (${solanaCount} Solana, ${ethereumCount} Ethereum)\n`;
-                topicsMessage += `• *Top Tokens:* ${topContractTopics}\n`;
+                topicsMessage += `- *Token Activity:* ${contractLikeTopics.length} contract addresses mentioned (${solanaCount} Solana, ${ethereumCount} Ethereum)\n`;
+                topicsMessage += `- *Top Tokens:* ${topContractTopics}\n`;
               }
               
               // Analyze memecoin topics for trading patterns
@@ -2000,9 +2000,9 @@ _Use /topics for detailed topic analysis_`;
                   const tradingVolume = tradingActivity.reduce((sum, t) => sum + t.count, 0);
                   const mostActive = tradingActivity.sort((a, b) => b.count - a.count)[0]?._id || '';
                   
-                  topicsMessage += `• *Trading Activity:* ${tradingActivity.length} tokens with ${tradingVolume} trading signals\n`;
+                  topicsMessage += `- *Trading Activity:* ${tradingActivity.length} tokens with ${tradingVolume} trading signals\n`;
                   if (mostActive && !isContractAddress(mostActive)) {
-                    topicsMessage += `• *Hottest Token:* ${escapeTopicMarkdown(mostActive)}\n`;
+                    topicsMessage += `- *Hottest Token:* ${escapeTopicMarkdown(mostActive)}\n`;
                   }
                 }
                 
@@ -2013,7 +2013,7 @@ _Use /topics for detailed topic analysis_`;
                 );
                 
                 if (launchActivity.length > 0) {
-                  topicsMessage += `• *Launch Activity:* ${launchActivity.length} potential new token launches detected\n`;
+                  topicsMessage += `- *Launch Activity:* ${launchActivity.length} potential new token launches detected\n`;
                 }
               }
               
@@ -2025,7 +2025,7 @@ _Use /topics for detailed topic analysis_`;
                   .slice(0, 3)
                   .join(', ');
                 
-                topicsMessage += `• *Trending Discussions:* ${trendingTopics}\n`;
+                topicsMessage += `- *Trending Discussions:* ${trendingTopics}\n`;
               }
               
               // Add sentiment overview
@@ -2033,11 +2033,11 @@ _Use /topics for detailed topic analysis_`;
               const negativeSentimentTopics = topics.filter(t => t.dominantSentiment === 'negative').length;
               
               if (positiveSentimentTopics > negativeSentimentTopics) {
-                topicsMessage += `• *Sentiment Analysis:* Overall positive discussions across ${positiveSentimentTopics} topics\n`;
+                topicsMessage += `- *Sentiment Analysis:* Overall positive discussions across ${positiveSentimentTopics} topics\n`;
               } else if (negativeSentimentTopics > positiveSentimentTopics) {
-                topicsMessage += `• *Sentiment Analysis:* Several topics (${negativeSentimentTopics}) show negative sentiment\n`;
+                topicsMessage += `- *Sentiment Analysis:* Several topics (${negativeSentimentTopics}) show negative sentiment\n`;
               } else {
-                topicsMessage += `• *Sentiment Analysis:* Balanced sentiment across discussions\n`;
+                topicsMessage += `- *Sentiment Analysis:* Balanced sentiment across discussions\n`;
               }
               
               topicsMessage += `\n_Analysis based on ${totalMentions} topic mentions across ${topics.length} unique topics_`;
