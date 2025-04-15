@@ -1,19 +1,56 @@
 const { Telegraf } = require('telegraf');
 const Message = require('../models/Message');
+const Payment = require('../models/Payment');
 const { analyzeMessage, isOpenAIServiceAvailable, getOpenAIErrorStatus } = require('./openai');
 const { isDBConnected, forceReconnect } = require('../config/database');
+const { PAYMENT_ADDRESS, THREE_MONTH_PAYMENT, ANNUAL_PAYMENT, verifyPaymentTransaction, calculateExpirationDate } = require('./solana');
 const axios = require('axios');
 require('dotenv').config();
 
 // --- Authorization Configuration ---
-const ALLOWED_GROUP_IDS = [
-  -2484836322, // Replace with actual negative group ID if needed
-  -2521462418,
+// Static allowed groups (admin groups with permanent access)
+const ADMIN_GROUP_IDS = [
+  -2484836322, // Admin group 1
+  -2521462418  // Admin group 2
+];
+
+// All allowed groups - will be dynamically updated based on subscriptions
+let ALLOWED_GROUP_IDS = [
+  ...ADMIN_GROUP_IDS,
   -2227569944, // Replace with actual negative group ID if needed
   -2648239653  // Replace with actual negative group ID if needed
 ];
 const OWNER_ID = 5348052974;
 // --- End Authorization Configuration ---
+
+// Payment states tracking - to track conversation state during payment process
+const paymentStates = new Map();
+
+// Periodically refresh allowed groups from database
+const refreshAllowedGroups = async () => {
+  try {
+    if (!isDBConnected()) {
+      console.log('Cannot refresh allowed groups: Database not connected');
+      return;
+    }
+    
+    // Get all active subscriptions
+    const activePayments = await Payment.find({
+      paymentStatus: 'verified',
+      expirationDate: { $gt: new Date() }
+    });
+    
+    // Extract group IDs from active payments
+    const paidGroupIds = activePayments.map(payment => payment.groupId);
+    
+    // Combine with admin groups
+    ALLOWED_GROUP_IDS = [...ADMIN_GROUP_IDS, ...paidGroupIds];
+    
+    console.log(`Refreshed allowed groups. Total groups: ${ALLOWED_GROUP_IDS.length}`);
+  } catch (error) {
+    console.error('Error refreshing allowed groups:', error);
+  }
+};
 
 // Initialize bot with error handling
 let bot;
@@ -166,7 +203,7 @@ const launchBotWithRetry = async (retryDelay = 5000) => {
 };
 
 // Check if the chat ID is in the allowed list
-const isAllowedGroup = (chatId) => {
+const isAllowedGroup = async (chatId) => {
   // Convert chatId to string for easier manipulation
   const chatIdStr = chatId.toString();
   
@@ -178,20 +215,51 @@ const isAllowedGroup = (chatId) => {
   
   console.log(`Normalizing chatId: original=${chatId}, normalized=${normalizedChatId}`);
   
-  // Check each allowed ID
+  // First check the in-memory list (faster)
+  if (ALLOWED_GROUP_IDS.includes(chatId) || ALLOWED_GROUP_IDS.includes(normalizedChatId)) {
+    console.log(`Group ${chatId} is authorized (in memory list)`);
+    return true;
+  }
+  
+  // Check string form (handles the -100 prefix case)
   for (const allowedId of ALLOWED_GROUP_IDS) {
-    // Try direct match
-    if (allowedId === chatId || allowedId === normalizedChatId) {
-      console.log(`Group ${chatId} is authorized (matched with ${allowedId})`);
-      return true;
-    }
-    
-    // Also check string form (handles the -100 prefix case)
     const allowedIdStr = allowedId.toString();
     if (chatIdStr === allowedIdStr || 
         chatIdStr === `-100${allowedIdStr.substring(1)}`) { // Convert -123 to -100123 format
       console.log(`Group ${chatId} is authorized (string matched with ${allowedId})`);
       return true;
+    }
+  }
+  
+  // If not in memory list, check database for subscription if DB is connected
+  if (isDBConnected()) {
+    try {
+      // Check database for active subscription
+      const hasSubscription = await Payment.hasActiveSubscription(chatId);
+      
+      if (hasSubscription) {
+        console.log(`Group ${chatId} is authorized (database subscription check)`);
+        // Add to cache for faster future checks
+        if (!ALLOWED_GROUP_IDS.includes(chatId)) {
+          ALLOWED_GROUP_IDS.push(chatId);
+        }
+        return true;
+      }
+      
+      // Also try with normalized ID
+      const hasNormalizedSubscription = await Payment.hasActiveSubscription(normalizedChatId);
+      
+      if (hasNormalizedSubscription) {
+        console.log(`Group ${normalizedChatId} is authorized (database subscription check with normalized ID)`);
+        // Add to cache for faster future checks
+        if (!ALLOWED_GROUP_IDS.includes(normalizedChatId)) {
+          ALLOWED_GROUP_IDS.push(normalizedChatId);
+        }
+        return true;
+      }
+    } catch (error) {
+      console.error(`Error checking subscription: ${error.message}`);
+      // Continue with normal checks
     }
   }
   
@@ -311,7 +379,10 @@ const initBot = async () => {
         { command: 'topics', description: 'Show categorized topics' },
         { command: 'leaderboard', description: 'Show top users by quality score' },
         { command: 'health', description: 'Check bot service health' },
-        { command: 'price', description: 'Check price of a crypto coin' }
+        { command: 'price', description: 'Check price of a crypto coin' },
+        { command: 'subscribe', description: 'Subscribe to the bot' },
+        { command: 'verify', description: 'Verify payment' },
+        { command: 'subscription', description: 'Check subscription status' }
       ]);
     } catch (error) {
       console.error(`Failed to set bot commands: ${error.message}`);
@@ -358,7 +429,7 @@ Just use any command, and I'll ask you which group you want to view information 
         } else {
           // Group chat check
           const chatIdForCheck = ctx.chat?.id;
-          const isGroupAllowed = chatIdForCheck ? isAllowedGroup(chatIdForCheck) : false;
+          const isGroupAllowed = chatIdForCheck ? await isAllowedGroup(chatIdForCheck) : false;
           
           if (isGroupAllowed) {
             const privacyMessage = `
@@ -405,6 +476,11 @@ Group Analysis Commands (work in private chat or groups):
 • /topics - Show categorized topics in the chat
 • /leaderboard - Show top users ranked by quality score
 • /price <coin> - Check current price of a cryptocurrency
+• /subscription - Check subscription status
+
+Subscription Commands:
+• /subscribe - Start subscription process for a group
+• /verify - Verify a payment transaction
 
 System Commands:
 • /start - Start the bot
@@ -424,7 +500,8 @@ ${isOwner ? "As the bot owner, you have full access to all commands and all grou
             '/topics - Show categorized topics in this chat\n' +
             '/leaderboard - Show top users ranked by quality score\n' +
             '/health - Check bot service health\n' +
-            '/price <coin> - Check current price of a cryptocurrency'
+            '/price <coin> - Check current price of a cryptocurrency\n' +
+            '/subscription - Check subscription status'
           );
         }
       } catch (error) {
@@ -439,7 +516,7 @@ ${isOwner ? "As the bot owner, you have full access to all commands and all grou
         const isOwner = ctx.from.id === OWNER_ID;
         
         // Check authorization
-        if (!isAllowedGroup(ctx.chat.id) && !isOwner) {
+        if (!await isAllowedGroup(ctx.chat.id) && !isOwner) {
           // If not in allowed group or owner, check if user is admin in any allowed group
           const adminGroups = await isGroupAdmin(ctx.from.id);
           
@@ -534,7 +611,7 @@ _You can use commands like /stats, /topics and /leaderboard in private chat with
         // --- Authorization Check ---
         // Debug logging for authorization check
         const chatIdForCheck = ctx.chat.id;
-        const isGroupAllowed = isAllowedGroup(chatIdForCheck);
+        const isGroupAllowed = await isAllowedGroup(chatIdForCheck);
         const isOwner = ctx.from.id === OWNER_ID;
         console.log(`[Stats Auth] Checking chatId: ${chatIdForCheck} (Type: ${typeof chatIdForCheck}), Allowed: ${isGroupAllowed}, IsOwner: ${isOwner}`);
         console.log(`[Stats Auth] ALLOWED_GROUP_IDS: ${ALLOWED_GROUP_IDS} (Type: ${typeof ALLOWED_GROUP_IDS[0]})`);
@@ -727,7 +804,7 @@ _Use /topics for detailed topic analysis_`;
         // --- Authorization Check ---
         // Debug logging for authorization check
         const chatIdForCheck = ctx.chat.id;
-        const isGroupAllowed = isAllowedGroup(chatIdForCheck);
+        const isGroupAllowed = await isAllowedGroup(chatIdForCheck);
         const isOwner = ctx.from.id === OWNER_ID;
         console.log(`[Topics Auth] Checking chatId: ${chatIdForCheck} (Type: ${typeof chatIdForCheck}), Allowed: ${isGroupAllowed}, IsOwner: ${isOwner}`);
         console.log(`[Topics Auth] ALLOWED_GROUP_IDS: ${ALLOWED_GROUP_IDS} (Type: ${typeof ALLOWED_GROUP_IDS[0]})`);
@@ -1088,7 +1165,7 @@ _Use /topics for detailed topic analysis_`;
         // --- Authorization Check ---
         // Debug logging for authorization check
         const chatIdForCheck = ctx.chat.id;
-        const isGroupAllowed = isAllowedGroup(chatIdForCheck);
+        const isGroupAllowed = await isAllowedGroup(chatIdForCheck);
         const isOwner = ctx.from.id === OWNER_ID;
         console.log(`[Price Auth] Checking chatId: ${chatIdForCheck} (Type: ${typeof chatIdForCheck}), Allowed: ${isGroupAllowed}, IsOwner: ${isOwner}`);
         console.log(`[Price Auth] ALLOWED_GROUP_IDS: ${ALLOWED_GROUP_IDS} (Type: ${typeof ALLOWED_GROUP_IDS[0]})`);
@@ -1215,7 +1292,7 @@ _Data from CoinGecko_
         // --- Authorization Check ---
         // Debug logging for authorization check
         const chatIdForCheck = ctx.chat.id;
-        const isGroupAllowed = isAllowedGroup(chatIdForCheck);
+        const isGroupAllowed = await isAllowedGroup(chatIdForCheck);
         const isOwner = ctx.from.id === OWNER_ID;
         console.log(`[Leaderboard Auth] Checking chatId: ${chatIdForCheck} (Type: ${typeof chatIdForCheck}), Allowed: ${isGroupAllowed}, IsOwner: ${isOwner}`);
         console.log(`[Leaderboard Auth] ALLOWED_GROUP_IDS: ${ALLOWED_GROUP_IDS} (Type: ${typeof ALLOWED_GROUP_IDS[0]})`);
@@ -1399,7 +1476,7 @@ ${leaderboardEntries}
         // --- Authorization Check ---
         // Skip if not in an allowed group chat
         const chatIdForCheck = ctx.chat?.id;
-        const isGroupAllowed = chatIdForCheck ? isAllowedGroup(chatIdForCheck) : false;
+        const isGroupAllowed = chatIdForCheck ? await isAllowedGroup(chatIdForCheck) : false;
         
         if (!ctx.chat || !isGroupAllowed) {
           // Don't log ignored messages from unauthorized groups to reduce noise
@@ -1539,19 +1616,85 @@ ${leaderboardEntries}
         const botWasAdded = newMembers.some(member => member.id === botInfo.id);
         
         if (botWasAdded) {
-          // --- Authorization Check ---
           const chatIdForCheck = ctx.chat?.id;
-          const isGroupAllowed = chatIdForCheck ? isAllowedGroup(chatIdForCheck) : false;
           
-          if (isGroupAllowed) {
+          // Check if in admin groups (allowed without payment)
+          const isAdminGroup = ADMIN_GROUP_IDS.includes(chatIdForCheck);
+          
+          if (isAdminGroup) {
             await ctx.reply(`Hello! I've been added to "${ctx.chat.title}". I'll start tracking and analyzing messages in this group.`);
-            console.log(`Bot was added to an ALLOWED group: ${ctx.chat.title} (${ctx.chat.id})`);
-          } else {
-            console.log(`Bot was added to an UNAUTHORIZED group: ${ctx.chat.title} (${ctx.chat.id}). Leaving.`);
-            await ctx.reply('Sorry, this bot is restricted to specific authorized groups and cannot operate here.');
-            await ctx.leaveChat();
+            console.log(`Bot was added to an ADMIN group: ${ctx.chat.title} (${ctx.chat.id})`);
+            return;
           }
-          // --- End Authorization Check ---
+          
+          // Check if group has active subscription
+          const hasSubscription = await Payment.hasActiveSubscription(chatIdForCheck);
+          
+          if (hasSubscription) {
+            // Get subscription details
+            const subscription = await Payment.getGroupSubscription(chatIdForCheck);
+            const daysLeft = subscription ? subscription.daysRemaining : 'unknown';
+            
+            await ctx.reply(
+              `Hello! I've been added to "${ctx.chat.title}".\n\n` +
+              `This group has an active subscription (${daysLeft} days remaining).\n\n` +
+              `I'll start tracking and analyzing messages right away!`
+            );
+            console.log(`Bot was added to a PAID group: ${ctx.chat.title} (${ctx.chat.id})`);
+            
+            // Add to allowed list if not already there
+            if (!ALLOWED_GROUP_IDS.includes(chatIdForCheck)) {
+              ALLOWED_GROUP_IDS.push(chatIdForCheck);
+            }
+            
+            return;
+          }
+          
+          // No subscription found - check if there's a pending payment
+          const pendingPayment = await Payment.findOne({ 
+            groupId: chatIdForCheck,
+            paymentStatus: 'pending'
+          });
+          
+          if (pendingPayment) {
+            // Remind about pending payment
+            await ctx.reply(
+              `Hello! I notice there's a pending payment for this group.\n\n` +
+              `Please complete the payment verification process by sending the Solana transaction ID to me in a private chat.\n\n` +
+              `You can start by messaging me directly @${botInfo.username} and using the /verify command.`
+            );
+            console.log(`Bot was added to a group with PENDING payment: ${ctx.chat.title} (${ctx.chat.id})`);
+            return;
+          }
+          
+          // No subscription or pending payment found
+          console.log(`Bot was added to an UNAUTHORIZED group: ${ctx.chat.title} (${ctx.chat.id}). Notifying about payment.`);
+          
+          await ctx.reply(
+            `Hello! I've been added to "${ctx.chat.title}".\n\n` +
+            `This group doesn't have an active subscription. The bot requires a subscription to work.\n\n` +
+            `Subscription options:\n` +
+            `• 3 months: ${THREE_MONTH_PAYMENT} SOL\n` +
+            `• 1 year: ${ANNUAL_PAYMENT} SOL\n\n` +
+            `To subscribe, please message me directly @${botInfo.username} and use the /subscribe command.\n\n` +
+            `I'll stay in the group for 1 hour to allow time for payment, then leave if no subscription is detected.`
+          );
+          
+          // Schedule leave chat if not paid within 1 hour
+          setTimeout(async () => {
+            try {
+              // Check again if subscription exists before leaving
+              const checkAgain = await Payment.hasActiveSubscription(chatIdForCheck);
+              
+              if (!checkAgain) {
+                await ctx.reply(`No active subscription detected. Leaving group now. Subscribe first, then add the bot back.`);
+                await ctx.leaveChat();
+                console.log(`Bot left unpaid group after 1 hour: ${ctx.chat.title} (${ctx.chat.id})`);
+              }
+            } catch (leaveError) {
+              console.error(`Error leaving unpaid group: ${leaveError.message}`);
+            }
+          }, 60 * 60 * 1000); // 1 hour
         }
       } catch (error) {
         console.error(`Error handling new chat members: ${error.message}`);
@@ -2254,6 +2397,153 @@ _Data from CoinGecko_
             }
             break;
             
+          case 'subscribe':
+            try {
+              // Only allow in private chat
+              if (ctx.chat.type !== 'private') {
+                return await ctx.reply('Please use this command in a private chat with the bot.');
+              }
+              
+              // Start payment wizard
+              await startPaymentWizard(ctx);
+            } catch (error) {
+              console.error(`Error handling subscribe command: ${error.message}`);
+              await ctx.reply('Sorry, there was an error processing your subscription request. Please try again later.');
+            }
+            break;
+            
+          case 'verify':
+            try {
+              // Only allow in private chat
+              if (ctx.chat.type !== 'private') {
+                return await ctx.reply('Please use this command in a private chat with the bot.');
+              }
+              
+              const userId = ctx.from.id;
+              const paymentState = paymentStates.get(userId);
+              
+              if (!paymentState || !paymentState.waitingForTransaction) {
+                return await ctx.reply(
+                  'Please start the subscription process first with /subscribe command.'
+                );
+              }
+              
+              // Extract transaction signature
+              const args = ctx.message.text.split(' ');
+              if (args.length < 2) {
+                return await ctx.reply(
+                  'Please provide a transaction signature. Usage: /verify <transaction_signature>'
+                );
+              }
+              
+              const transactionSignature = args[1].trim();
+              
+              // Check for existing transaction
+              const transactionUsed = await Payment.isTransactionUsed(transactionSignature);
+              if (transactionUsed) {
+                return await ctx.reply('This transaction has already been used for another subscription.');
+              }
+              
+              // Check transaction validity
+              await ctx.reply('⏳ Verifying your transaction. This may take a moment...');
+              
+              const verification = await verifyPaymentTransaction(
+                transactionSignature, 
+                paymentState.solanaWallet,
+                paymentState.paymentType
+              );
+              
+              if (!verification.isValid) {
+                return await ctx.reply(`❌ Transaction verification failed: ${verification.message}`);
+              }
+              
+              // Calculate expiration date
+              const expirationDate = calculateExpirationDate(paymentState.paymentType);
+              
+              // Update payment record
+              await Payment.findByIdAndUpdate(
+                paymentState.paymentId,
+                {
+                  paymentStatus: 'verified',
+                  transactionId: transactionSignature,
+                  transactionSignature: transactionSignature,
+                  verificationDate: new Date(),
+                  expirationDate: expirationDate,
+                  verificationNotes: `Verified manually by user. Amount: ${verification.details.amount} SOL`
+                }
+              );
+              
+              // Add group to allowed list
+              if (!ALLOWED_GROUP_IDS.includes(paymentState.groupId)) {
+                ALLOWED_GROUP_IDS.push(paymentState.groupId);
+              }
+              
+              // Clear payment state
+              paymentStates.delete(userId);
+              
+              // Send success message
+              const subscriptionEndDate = expirationDate.toLocaleDateString();
+              await ctx.reply(
+                `✅ Payment verified successfully!\n\n` +
+                `Your subscription for "${paymentState.groupTitle}" is now active until ${subscriptionEndDate}.\n\n` +
+                `You can now add the bot to your group or keep using it if it's already added.`
+              );
+              
+            } catch (error) {
+              console.error(`Error handling verify command: ${error.message}`);
+              await ctx.reply('Sorry, there was an error verifying your payment. Please try again later or contact support.');
+            }
+            break;
+            
+          case 'subscription':
+            try {
+              const isPrivateChat = ctx.chat.type === 'private';
+              const isOwner = ctx.from.id === OWNER_ID;
+              
+              // In private chat, admin must select a group
+              if (isPrivateChat) {
+                if (isOwner) {
+                  // For owner, show all subscriptions
+                  await showAllSubscriptions(ctx);
+                  return;
+                }
+                
+                // For regular users, check if they're admin in any groups
+                const adminGroups = await isGroupAdmin(ctx.from.id);
+                
+                if (!adminGroups) {
+                  return await ctx.reply('You are not an admin of any group with an active subscription.');
+                }
+                
+                // If only one group, show subscription for that
+                if (adminGroups.length === 1) {
+                  const groupId = adminGroups[0].id;
+                  await showSubscriptionForGroup(ctx, groupId);
+                  return;
+                }
+                
+                // If multiple groups, prompt selection
+                const selectedGroupId = await promptGroupSelection(ctx, ctx.from.id, 'subscription');
+                
+                if (!selectedGroupId) {
+                  // Selection is pending
+                  return;
+                }
+                
+                await showSubscriptionForGroup(ctx, selectedGroupId);
+                return;
+              }
+              
+              // In group chat, show subscription for current group
+              const groupId = ctx.chat.id;
+              await showSubscriptionForGroup(ctx, groupId);
+              
+            } catch (error) {
+              console.error(`Error handling subscription command: ${error.message}`);
+              await ctx.reply('Sorry, there was an error retrieving subscription information. Please try again later.');
+            }
+            break;
+            
           default:
             await ctx.reply('Unknown command selection');
         }
@@ -2312,11 +2602,351 @@ _Data from CoinGecko_
       console.log('Bot stopped due to SIGTERM');
     });
     
+    // Refresh allowed groups at startup
+    await refreshAllowedGroups();
+
+    // Set up periodic refresh
+    setInterval(refreshAllowedGroups, 60 * 60 * 1000); // Refresh every hour
+    
     return true;
   } catch (error) {
     console.error(`Error initializing bot: ${error.message}`);
     return false;
   }
 };
+
+// Helper function to start payment wizard
+async function startPaymentWizard(ctx) {
+  const userId = ctx.from.id;
+  
+  // Reset any existing payment state
+  paymentStates.delete(userId);
+  
+  // Start the wizard
+  await ctx.reply(
+    'Welcome to the bot subscription wizard!\n\n' +
+    'This bot requires a subscription for each group:\n' +
+    `• 3 months: ${THREE_MONTH_PAYMENT} SOL\n` +
+    `• 1 year: ${ANNUAL_PAYMENT} SOL\n\n` +
+    'To continue, please tell me which group you want to subscribe for.\n\n' +
+    'You can either:\n' +
+    '1. Forward a message from the group\n' +
+    '2. Send me the group ID (if you know it)\n' +
+    '3. Use /cancel to exit this wizard'
+  );
+  
+  // Set initial state
+  paymentStates.set(userId, {
+    stage: 'waiting_for_group',
+    userId: userId,
+    userName: ctx.from.username || `${ctx.from.first_name} ${ctx.from.last_name || ''}`
+  });
+  
+  // Set up message listener for the payment flow
+  bot.use(async (ctx, next) => {
+    // Skip non-text messages or if not in payment flow
+    if (!ctx.message || !ctx.message.text || ctx.chat.type !== 'private') {
+      return next();
+    }
+    
+    const userId = ctx.from.id;
+    const state = paymentStates.get(userId);
+    
+    // Not in payment flow
+    if (!state) {
+      return next();
+    }
+    
+    // Check for cancel command
+    if (ctx.message.text.toLowerCase() === '/cancel') {
+      paymentStates.delete(userId);
+      await ctx.reply('Subscription process cancelled. You can start again anytime with /subscribe.');
+      return;
+    }
+    
+    // Handle payment flow based on stage
+    switch (state.stage) {
+      case 'waiting_for_group':
+        await handleGroupSelection(ctx, state);
+        break;
+        
+      case 'waiting_for_wallet':
+        await handleWalletInput(ctx, state);
+        break;
+        
+      case 'waiting_for_payment_type':
+        await handlePaymentTypeSelection(ctx, state);
+        break;
+        
+      case 'waiting_for_transaction':
+        await handleTransactionInput(ctx, state);
+        break;
+        
+      default:
+        // Pass to next middleware
+        return next();
+    }
+  });
+}
+
+// Handle group selection stage
+async function handleGroupSelection(ctx, state) {
+  // Handle forwarded message
+  if (ctx.message.forward_from_chat) {
+    const forwardedChat = ctx.message.forward_from_chat;
+    
+    if (forwardedChat.type === 'group' || forwardedChat.type === 'supergroup') {
+      const groupId = forwardedChat.id;
+      const groupTitle = forwardedChat.title;
+      
+      // Check if user is admin in this group
+      try {
+        const chatMember = await bot.telegram.getChatMember(groupId, ctx.from.id);
+        
+        if (chatMember.status !== 'creator' && chatMember.status !== 'administrator') {
+          await ctx.reply('You must be an admin or owner of the group to subscribe it.');
+          return;
+        }
+        
+        // Update state
+        state.groupId = groupId;
+        state.groupTitle = groupTitle;
+        state.stage = 'waiting_for_payment_type';
+        paymentStates.set(ctx.from.id, state);
+        
+        // Ask for payment type
+        await ctx.reply(
+          `Group selected: "${groupTitle}"\n\n` +
+          'Please select your subscription type:\n\n' +
+          `1. 3 months (${THREE_MONTH_PAYMENT} SOL)\n` +
+          `2. 1 year (${ANNUAL_PAYMENT} SOL)\n\n` +
+          'Reply with 1 or 2'
+        );
+      } catch (error) {
+        console.error(`Error checking admin status: ${error.message}`);
+        await ctx.reply('Error checking your admin status. Please make sure the bot is in the group and try again.');
+      }
+      return;
+    }
+  }
+  
+  // Handle manual group ID input
+  const potentialGroupId = parseInt(ctx.message.text.trim());
+  
+  if (!isNaN(potentialGroupId)) {
+    try {
+      // Try to get group info
+      const chatInfo = await bot.telegram.getChat(potentialGroupId);
+      
+      if (chatInfo.type === 'group' || chatInfo.type === 'supergroup') {
+        // Check if user is admin
+        const chatMember = await bot.telegram.getChatMember(potentialGroupId, ctx.from.id);
+        
+        if (chatMember.status !== 'creator' && chatMember.status !== 'administrator') {
+          await ctx.reply('You must be an admin or owner of the group to subscribe it.');
+          return;
+        }
+        
+        // Update state
+        state.groupId = potentialGroupId;
+        state.groupTitle = chatInfo.title;
+        state.stage = 'waiting_for_payment_type';
+        paymentStates.set(ctx.from.id, state);
+        
+        // Ask for payment type
+        await ctx.reply(
+          `Group selected: "${chatInfo.title}"\n\n` +
+          'Please select your subscription type:\n\n' +
+          `1. 3 months (${THREE_MONTH_PAYMENT} SOL)\n` +
+          `2. 1 year (${ANNUAL_PAYMENT} SOL)\n\n` +
+          'Reply with 1 or 2'
+        );
+        return;
+      }
+    } catch (error) {
+      await ctx.reply('I could not find this group or I am not a member of it yet. Please forward a message from the group instead.');
+      return;
+    }
+  }
+  
+  // Invalid input
+  await ctx.reply(
+    'I could not identify a group from your message.\n\n' +
+    'Please either:\n' +
+    '1. Forward a message from the group\n' +
+    '2. Send the group ID (negative number)\n' +
+    '3. Use /cancel to exit this wizard'
+  );
+}
+
+// Handle payment type selection stage
+async function handlePaymentTypeSelection(ctx, state) {
+  const choice = ctx.message.text.trim();
+  
+  if (choice === '1') {
+    state.paymentType = '3-month';
+    state.paymentAmount = THREE_MONTH_PAYMENT;
+  } else if (choice === '2') {
+    state.paymentType = 'annual';
+    state.paymentAmount = ANNUAL_PAYMENT;
+  } else {
+    await ctx.reply('Please reply with 1 (for 3 months) or 2 (for 1 year).');
+    return;
+  }
+  
+  // Update state
+  state.stage = 'waiting_for_wallet';
+  paymentStates.set(ctx.from.id, state);
+  
+  // Ask for wallet address
+  await ctx.reply(
+    'Please provide your Solana wallet address.\n\n' +
+    'This is the wallet you will use to send the payment from.\n' +
+    'We verify that payments come from this address for security.'
+  );
+}
+
+// Handle wallet input stage
+async function handleWalletInput(ctx, state) {
+  const walletAddress = ctx.message.text.trim();
+  
+  // Basic validation for Solana address
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(walletAddress)) {
+    await ctx.reply('This doesn\'t look like a valid Solana wallet address. Please check and try again.');
+    return;
+  }
+  
+  // Update state
+  state.solanaWallet = walletAddress;
+  state.stage = 'waiting_for_transaction';
+  
+  // Create payment record
+  try {
+    const payment = new Payment({
+      groupId: state.groupId,
+      groupTitle: state.groupTitle,
+      requestedBy: state.userId,
+      requestedByName: state.userName,
+      solanaWallet: state.solanaWallet,
+      paymentAmount: state.paymentAmount,
+      paymentType: state.paymentType,
+      paymentStatus: 'pending'
+    });
+    
+    const savedPayment = await payment.save();
+    state.paymentId = savedPayment._id;
+    
+    // Update state
+    state.waitingForTransaction = true;
+    paymentStates.set(ctx.from.id, state);
+    
+    // Provide payment instructions
+    await ctx.reply(
+      `Please send exactly ${state.paymentAmount} SOL to this address:\n\n` +
+      `\`${PAYMENT_ADDRESS}\`\n\n` +
+      'IMPORTANT:\n' +
+      `• Send from the wallet you provided (${walletAddress})\n` +
+      `• Send exactly ${state.paymentAmount} SOL\n` +
+      '• Keep the transaction ID/signature\n\n' +
+      'After sending, use:\n/verify <transaction_signature>\n\n' +
+      'Example: /verify 4RPyx...'
+    );
+  } catch (error) {
+    console.error(`Error saving payment record: ${error.message}`);
+    await ctx.reply('There was an error processing your request. Please try again later.');
+    paymentStates.delete(ctx.from.id);
+  }
+}
+
+// Handle transaction input via the /verify command
+async function handleTransactionInput(ctx, state) {
+  // Nothing to do here as we handle transaction verification in the /verify command
+  await ctx.reply('Please use the /verify command followed by your transaction signature to verify payment.');
+}
+
+// Helper function to show subscription status for a group
+async function showSubscriptionForGroup(ctx, groupId) {
+  if (!isDBConnected()) {
+    return await ctx.reply('⚠️ Database connection is unavailable. Subscription status cannot be retrieved at this time.');
+  }
+  
+  // Get subscription details
+  const subscription = await Payment.getGroupSubscription(groupId);
+  
+  if (!subscription) {
+    // Check if group is an admin group
+    const isAdmin = ADMIN_GROUP_IDS.includes(groupId);
+    
+    if (isAdmin) {
+      return await ctx.reply('This is an admin group with permanent access. No subscription required.');
+    }
+    
+    // Check for pending payment
+    const pendingPayment = await Payment.findOne({
+      groupId,
+      paymentStatus: 'pending'
+    });
+    
+    if (pendingPayment) {
+      return await ctx.reply(
+        'This group has a pending payment that needs to be verified.\n\n' +
+        'Please complete the verification by sending the transaction ID to the bot in a private chat using the /verify command.'
+      );
+    }
+    
+    return await ctx.reply(
+      'This group does not have an active subscription.\n\n' +
+      'To subscribe, please message the bot directly and use the /subscribe command.'
+    );
+  }
+  
+  // Format expiration date
+  const expirationDate = subscription.expirationDate.toLocaleDateString();
+  
+  // Show subscription details
+  await ctx.reply(
+    `Subscription Status for "${ctx.chat.title || 'this group'}"\n\n` +
+    `Type: ${subscription.paymentType === '3-month' ? '3 Months' : 'Annual'}\n` +
+    `Status: Active\n` +
+    `Expires: ${expirationDate}\n` +
+    `Days remaining: ${subscription.daysRemaining}\n\n` +
+    `To extend your subscription, use the /subscribe command in a private chat with the bot.`
+  );
+}
+
+// Helper function to show all subscriptions (owner only)
+async function showAllSubscriptions(ctx) {
+  if (ctx.from.id !== OWNER_ID) {
+    return await ctx.reply('This command is only available to the bot owner.');
+  }
+  
+  if (!isDBConnected()) {
+    return await ctx.reply('⚠️ Database connection is unavailable. Subscription status cannot be retrieved at this time.');
+  }
+  
+  // Get all active subscriptions
+  const subscriptions = await Payment.find({
+    paymentStatus: 'verified',
+    expirationDate: { $gt: new Date() }
+  }).sort({ expirationDate: 1 });
+  
+  if (subscriptions.length === 0) {
+    return await ctx.reply('There are no active subscriptions.');
+  }
+  
+  // Create summary message
+  let message = `*Active Subscriptions (${subscriptions.length} total)*\n\n`;
+  
+  subscriptions.forEach((sub, index) => {
+    const expirationDate = sub.expirationDate.toLocaleDateString();
+    const daysRemaining = Math.ceil((sub.expirationDate - new Date()) / (1000 * 60 * 60 * 24));
+    
+    message += `${index + 1}. ${sub.groupTitle}\n`;
+    message += `   Type: ${sub.paymentType === '3-month' ? '3 Months' : 'Annual'}\n`;
+    message += `   Expires: ${expirationDate} (${daysRemaining} days left)\n\n`;
+  });
+  
+  await ctx.reply(message, { parse_mode: 'Markdown' });
+}
 
 module.exports = { initBot, getServiceStatus }; 
