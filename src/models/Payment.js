@@ -1,238 +1,113 @@
 const mongoose = require('mongoose');
-const { v4: uuidv4 } = require('uuid');
 
-/**
- * Payment schema for handling transaction records
- */
 const paymentSchema = new mongoose.Schema({
-  // Unique payment identifier
-  paymentId: {
-    type: String,
-    required: true,
-    unique: true,
-    index: true
-  },
-  
-  // User information
-  userId: {
-    type: String,
-    required: true,
-    index: true
-  },
-  telegramUserId: {
-    type: Number,
-    index: true
-  },
-  userName: String,
-  userUsername: String,
-  
-  // Group information (if applicable)
+  // Telegram info
   groupId: {
     type: Number,
+    required: true,
     index: true
   },
-  groupTitle: String,
-  
-  // Payment details
-  amount: {
-    type: Number,
-    required: true,
-    min: 0
-  },
-  totalAmount: {
-    type: Number,
-    required: true,
-    min: 0
-  },
-  processingFee: {
-    type: Number,
-    required: true,
-    min: 0
-  },
-  platformFee: {
-    type: Number,
-    required: true,
-    min: 0
-  },
-  currency: {
+  groupTitle: {
     type: String,
-    required: true,
-    enum: ['SOL', 'USDC', 'USD'],
-    default: 'SOL',
-    uppercase: true
+    default: 'Unknown Group'
   },
-  paymentMethod: {
-    type: String,
-    required: true,
-    enum: ['solana', 'crypto', 'card', 'bank', 'other']
+  requestedBy: {
+    type: Number, // Telegram user ID
+    required: true
   },
+  requestedByName: String,
   
-  // Payment status
-  status: {
+  // Payment info
+  solanaWallet: {
     type: String,
-    required: true,
-    enum: ['pending', 'processing', 'completed', 'failed', 'expired', 'cancelled'],
-    default: 'pending',
-    lowercase: true,
-    index: true
+    required: true
   },
-  
-  // Related subscription
-  subscriptionId: {
+  paymentAmount: {
+    type: Number,
+    required: true
+  },
+  paymentType: {
     type: String,
-    index: true
+    enum: ['3-month', 'annual'],
+    required: true
   },
-  
-  // Transaction information
   transactionId: {
+    type: String,
+    sparse: true,
+    index: true
+  },
+  transactionSignature: {
     type: String,
     sparse: true
   },
   
-  // Timing information
-  createdAt: {
+  // Status
+  paymentStatus: {
+    type: String,
+    enum: ['pending', 'verified', 'expired', 'rejected'],
+    default: 'pending'
+  },
+  
+  // Dates
+  requestDate: {
     type: Date,
     default: Date.now
   },
-  confirmedAt: Date,
-  expiresAt: {
-    type: Date,
-    required: true,
-    index: true
-  },
+  verificationDate: Date,
+  expirationDate: Date,
   
-  // Additional metadata
-  metadata: {
-    type: Object,
-    default: {}
-  },
-  
-  // Notes or additional information
-  notes: String,
-  
-  // Failure and cancellation reasons
-  failureReason: {
-    type: String
-  },
-  cancellationReason: {
-    type: String
-  },
-  
-  // Completed at
-  completedAt: {
-    type: Date
-  },
-  
-  // Wallet address
-  walletAddress: {
-    type: String
-  },
-  
-  // Purpose
-  purpose: {
-    type: String,
-    required: true,
-    enum: ['subscription', 'upgrade', 'tip', 'donation', 'service', 'other'],
-    default: 'other',
-    lowercase: true
-  }
-}, { 
-  timestamps: true,
-  versionKey: false
+  // Payment verification notes
+  verificationNotes: String
 });
 
-// Indexes
-paymentSchema.index({ createdAt: -1 });
-paymentSchema.index({ status: 1, expiresAt: 1 });
-paymentSchema.index({ userId: 1, status: 1 });
-
-/**
- * Generate a unique payment ID
- * @returns {Promise<String>} A unique payment ID
- */
-paymentSchema.statics.generatePaymentId = async function() {
-  let isUnique = false;
-  let paymentId;
+// Static method to check if a group has an active subscription
+paymentSchema.statics.hasActiveSubscription = async function(groupId) {
+  const now = new Date();
   
-  while (!isUnique) {
-    // Generate a payment ID with 'pay_' prefix
-    paymentId = 'pay_' + uuidv4().replace(/-/g, '').substring(0, 16);
-    
-    // Check if the ID already exists
-    const existingPayment = await this.findOne({ paymentId });
-    if (!existingPayment) {
-      isUnique = true;
-    }
+  // Find payments that are verified and not expired
+  const activePayment = await this.findOne({
+    groupId,
+    paymentStatus: 'verified',
+    expirationDate: { $gt: now }
+  }).sort({ expirationDate: -1 });
+  
+  return !!activePayment;
+};
+
+// Static method to check if a transaction has been used before
+paymentSchema.statics.isTransactionUsed = async function(transactionId) {
+  const payment = await this.findOne({ transactionId });
+  return !!payment;
+};
+
+// Static method to get subscription details for a group
+paymentSchema.statics.getGroupSubscription = async function(groupId) {
+  const now = new Date();
+  
+  // Find the active subscription
+  const subscription = await this.findOne({
+    groupId,
+    paymentStatus: 'verified',
+    expirationDate: { $gt: now }
+  }).sort({ expirationDate: -1 });
+  
+  if (!subscription) {
+    return null;
   }
   
-  return paymentId;
-};
-
-/**
- * Find a payment by its payment ID
- * @param {String} paymentId - The payment ID to find
- * @returns {Promise<Object>} The payment document or null
- */
-paymentSchema.statics.findByPaymentId = function(paymentId) {
-  return this.findOne({ paymentId });
-};
-
-/**
- * Find all payments by user ID
- * @param {Number} userId - The user ID to search for
- * @returns {Promise<Array>} List of payments
- */
-paymentSchema.statics.findByUserId = function(userId) {
-  return this.find({ userId }).sort({ createdAt: -1 });
-};
-
-/**
- * Find all payments by group ID
- * @param {Number} groupId - The group ID to search for
- * @returns {Promise<Array>} List of payments
- */
-paymentSchema.statics.findByGroupId = function(groupId) {
-  return this.find({ groupId }).sort({ createdAt: -1 });
-};
-
-/**
- * Update expired pending payments
- * @returns {Promise<Number>} Number of updated payments
- */
-paymentSchema.statics.updateExpiredPayments = async function() {
-  const now = new Date();
-  const result = await this.updateMany(
-    {
-      status: 'pending',
-      expiresAt: { $lt: now }
-    },
-    {
-      $set: {
-        status: 'expired',
-        notes: 'Payment expired automatically due to timeout'
-      }
-    }
-  );
+  // Calculate days remaining
+  const daysRemaining = Math.ceil((subscription.expirationDate - now) / (1000 * 60 * 60 * 24));
   
-  return result.nModified;
+  return {
+    groupId: subscription.groupId,
+    paymentType: subscription.paymentType,
+    expirationDate: subscription.expirationDate,
+    daysRemaining,
+    solanaWallet: subscription.solanaWallet,
+    transactionId: subscription.transactionId
+  };
 };
 
-/**
- * Find payments that need reminder notification
- * @param {Number} minutesBeforeExpiry - Minutes before expiry to send reminder
- * @returns {Promise<Array>} Payments needing reminder
- */
-paymentSchema.statics.findPaymentsNeedingReminder = function(minutesBeforeExpiry = 10) {
-  const now = new Date();
-  const reminderTime = new Date(now.getTime() + minutesBeforeExpiry * 60 * 1000);
-  
-  return this.find({
-    status: 'pending',
-    expiresAt: { $gt: now, $lt: reminderTime }
-  });
-};
-
-// Create the Payment model
 const Payment = mongoose.model('Payment', paymentSchema);
 
 module.exports = Payment; 
