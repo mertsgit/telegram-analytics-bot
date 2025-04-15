@@ -892,6 +892,17 @@ _Use /topics for detailed topic analysis_`;
           general: {
             name: "General Topics",
             topics: []
+          },
+          // New specialized categories for Solana trading groups
+          tickers: {
+            name: "Token Tickers",
+            topics: [],
+            regex: /\$[A-Za-z0-9_]{2,10}\b|^[A-Z0-9]{2,8}$|\b(?:SOL|BTC|ETH|USDC|USDT|BONK|WIF|JTO|BOME|SHDW|PYTH|RAY|JUP|MNGO|AURY|DUST)[^a-zA-Z0-9]/i
+          },
+          contracts: {
+            name: "Contract Addresses",
+            topics: [],
+            hidden: true // We'll process but not display these directly
           }
         };
         
@@ -899,32 +910,104 @@ _Use /topics for detailed topic analysis_`;
         const isContractAddress = (topicId) => {
           // Solana addresses (base58 encoded, 32-44 chars)
           if (/^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(topicId)) {
-            return true;
+            return {isContract: true, type: 'solana'};
           }
           // Ethereum style addresses (0x followed by 40 hex chars)
           if (/^(0x)?[a-fA-F0-9]{40}$/.test(topicId)) {
-            return true;
+            return {isContract: true, type: 'ethereum'};
           }
           // Memecoin contract addresses often have "pump" in them
           if (/^[A-Za-z0-9]{30,}pump$/i.test(topicId)) {
-            return true;
+            return {isContract: true, type: 'other'};
           }
-          return false;
+          return {isContract: false};
         };
 
-        // Pre-process topics to identify contract addresses
+        // Helper function to identify ticker symbols
+        const isTicker = (topicId) => {
+          // Matches $XXX format or standard ticker formats
+          if (/^\$[A-Za-z0-9_]{2,10}$/.test(topicId)) {
+            return {isTicker: true, symbol: topicId.substring(1), hasPrefix: true};
+          }
+          // All caps 2-8 characters that could be tickers
+          if (/^[A-Z0-9]{2,8}$/.test(topicId)) {
+            return {isTicker: true, symbol: topicId, hasPrefix: false};
+          }
+          // Known common token tickers
+          if (/^(SOL|BTC|ETH|USDC|USDT|BONK|WIF|JTO|BOME|SHDW|PYTH|RAY|JUP|MNGO|AURY|DUST)$/.test(topicId)) {
+            return {isTicker: true, symbol: topicId, hasPrefix: false, isCommon: true};
+          }
+          return {isTicker: false};
+        };
+
+        // Pre-process topics to identify and categorize contract addresses and tickers
+        let contractAddresses = {
+          solana: [],
+          ethereum: [],
+          other: []
+        };
+        
+        let tickerSymbols = {};
+        let mentionedTickers = new Set();
+
+        // First pass: identify contracts and tickers
         topics.forEach(topic => {
-          if (isContractAddress(topic._id)) {
+          const contractCheck = isContractAddress(topic._id);
+          const tickerCheck = isTicker(topic._id);
+          
+          if (contractCheck.isContract) {
             topic.isContract = true;
-            topic.contractType = topic._id.startsWith('0x') ? 'ethereum' : 'solana';
+            topic.contractType = contractCheck.type;
+            contractAddresses[contractCheck.type].push(topic);
+            categories.contracts.topics.push(topic);
+          } 
+          else if (tickerCheck.isTicker) {
+            topic.isTicker = true;
+            topic.symbol = tickerCheck.symbol;
+            topic.hasPrefix = tickerCheck.hasPrefix;
+            topic.isCommon = tickerCheck.isCommon || false;
+            
+            // Store in tickers category
+            categories.tickers.topics.push(topic);
+            
+            // Keep count of mentions by symbol (normalizing to uppercase)
+            const normalizedSymbol = tickerCheck.symbol.toUpperCase();
+            mentionedTickers.add(normalizedSymbol);
+            
+            if (!tickerSymbols[normalizedSymbol]) {
+              tickerSymbols[normalizedSymbol] = {
+                count: topic.count,
+                topics: [topic],
+                sentiment: topic.dominantSentiment || 'neutral',
+                lastMentioned: topic.lastMentioned,
+                trending: topic.trending || 'stable'
+              };
+            } else {
+              tickerSymbols[normalizedSymbol].count += topic.count;
+              tickerSymbols[normalizedSymbol].topics.push(topic);
+              // Use the most recent mention date
+              if (topic.lastMentioned > tickerSymbols[normalizedSymbol].lastMentioned) {
+                tickerSymbols[normalizedSymbol].lastMentioned = topic.lastMentioned;
+              }
+              // Favor trending status if any form of the ticker is trending
+              if (topic.trending === 'up') {
+                tickerSymbols[normalizedSymbol].trending = 'up';
+              }
+            }
           }
         });
         
-        // Categorize each topic
+        // Second pass: categorize remaining topics that aren't contracts or tickers
         topics.forEach(topic => {
+          // Skip if already categorized as contract or ticker
+          if (topic.isContract || topic.isTicker) return;
+          
           let categorized = false;
           for (const [key, category] of Object.entries(categories)) {
-            if (key !== 'general' && category.regex && category.regex.test(topic._id)) {
+            // Skip the contract and ticker categories, and general (saved for fallback)
+            if (key === 'contracts' || key === 'tickers' || key === 'general') continue;
+            
+            if (category.regex && category.regex.test(topic._id)) {
               category.topics.push(topic);
               categorized = true;
               break;
@@ -966,103 +1049,145 @@ _Use /topics for detailed topic analysis_`;
         // Find total topic mentions for percentages
         const totalMentions = topics.reduce((sum, topic) => sum + topic.count, 0);
         
-        for (const category of Object.values(categories)) {
-          if (category.topics.length > 0) {
-            // Get most discussed topic in this category
-            const mostDiscussed = [...category.topics].sort((a, b) => b.count - a.count)[0];
+        // First, show a summary of token tickers if this is a trading group
+        if (categories.tickers.topics.length > 0) {
+          // Sort tickers by count
+          const sortedTickers = Object.entries(tickerSymbols)
+            .sort((a, b) => b[1].count - a[1].count)
+            .slice(0, 8); // Take top 8 tickers
+          
+          topicsMessage += `*Most Discussed Tokens*\n`;
+          
+          sortedTickers.forEach(([symbol, data], index) => {
+            const percentage = Math.round((data.count / totalMentions) * 100);
+            const trending = data.trending === 'up' ? ' 📈' : '';
+            const sentiment = data.sentiment === 'positive' ? ' ✅' : 
+                             data.sentiment === 'negative' ? ' 🔴' : '';
             
-            topicsMessage += `*${category.name}*`;
+            topicsMessage += `${index+1}. *$${escapeTopicMarkdown(symbol)}*: ${data.count} mentions (${percentage}%)${trending}${sentiment}\n`;
+          });
+          
+          topicsMessage += `\n_Total unique tokens: ${mentionedTickers.size}_\n\n`;
+        }
+        
+        // Process contract addresses for insight rather than direct display
+        const contractCount = contractAddresses.solana.length + contractAddresses.ethereum.length + contractAddresses.other.length;
+        
+        if (contractCount > 0) {
+          // Calculate trending contracts
+          const trendingContracts = categories.contracts.topics.filter(t => t.trending === 'up');
+          const topContracts = categories.contracts.topics
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 3);
+          
+          // Rather than listing all the contracts, provide insight
+          topicsMessage += `*Contract Activity*\n`;
+          topicsMessage += `- ${contractAddresses.solana.length} Solana ${contractAddresses.solana.length === 1 ? 'address' : 'addresses'} mentioned\n`;
+          if (contractAddresses.ethereum.length > 0) {
+            topicsMessage += `- ${contractAddresses.ethereum.length} Ethereum ${contractAddresses.ethereum.length === 1 ? 'address' : 'addresses'} mentioned\n`;
+          }
+          
+          if (trendingContracts.length > 0) {
+            topicsMessage += `- ${trendingContracts.length} trending contract ${trendingContracts.length === 1 ? 'address' : 'addresses'}\n`;
+          }
+          
+          // For the top contracts, show a short preview of the address
+          if (topContracts.length > 0) {
+            topicsMessage += `\n*Top Contract Activity:*\n`;
+            topContracts.forEach((contract, i) => {
+              const addr = contract._id;
+              const shortAddr = addr.substring(0, 6) + '...' + addr.substring(addr.length - 4);
+              const type = contract.contractType === 'solana' ? 'Solana' : 
+                           contract.contractType === 'ethereum' ? 'ETH' : 'Other';
+              
+              topicsMessage += `${i+1}. \`${shortAddr}\` (${type}): ${contract.count} mentions\n`;
+            });
+          }
+          
+          topicsMessage += '\n';
+        }
+        
+        // Now process the regular topic categories
+        for (const [key, category] of Object.entries(categories)) {
+          // Skip the hidden categories and empty categories
+          if (category.hidden || category.topics.length === 0 || key === 'tickers') continue;
+          
+          // Get most discussed topic in this category
+          const mostDiscussed = [...category.topics].sort((a, b) => b.count - a.count)[0];
+          
+          topicsMessage += `*${category.name}*`;
+          
+          if (mostDiscussed && mostDiscussed.trending === 'up') {
+            topicsMessage += ` [TRENDING]`;
+          }
+          
+          topicsMessage += `\n`;
+          
+          // Format each topic with enhanced details
+          category.topics.slice(0, 3).forEach((topic, i) => {
+            // Skip contract addresses - we already handled them differently
+            if (topic.isContract) return;
             
-            if (mostDiscussed.trending === 'up') {
-              topicsMessage += ` [TRENDING]`;
+            const lastMentioned = new Date(topic.lastMentioned).toLocaleDateString();
+            const percentage = Math.round((topic.count / totalMentions) * 100);
+            
+            // Topic header with stats
+            topicsMessage += `${i+1}. *${escapeTopicMarkdown(topic._id)}* ${getTrendingEmoji(topic.trending)}\n`;
+            topicsMessage += `   • Mentions: ${topic.count} (${percentage}% of all topics)\n`;
+            
+            // Only show these fields if they exist (enhanced analysis)
+            if (topic.uniqueUserCount) {
+              topicsMessage += `   • Discussed by: ${topic.uniqueUserCount} members\n`;
             }
             
-            topicsMessage += `\n`;
+            if (topic.dominantSentiment) {
+              topicsMessage += `   • Sentiment: ${getSentimentEmoji(topic.dominantSentiment)}\n`;
+            }
             
-            // Format each topic with enhanced details
-            category.topics.slice(0, 3).forEach((topic, i) => {
-              const lastMentioned = new Date(topic.lastMentioned).toLocaleDateString();
-              const percentage = Math.round((topic.count / totalMentions) * 100);
-              
-              // Topic header with stats
-              topicsMessage += `${i+1}. *${escapeTopicMarkdown(topic._id)}* ${getTrendingEmoji(topic.trending)}\n`;
-              topicsMessage += `   • Mentions: ${topic.count} (${percentage}% of all topics)\n`;
-              
-              // Only show these fields if they exist (enhanced analysis)
-              if (topic.uniqueUserCount) {
-                topicsMessage += `   • Discussed by: ${topic.uniqueUserCount} members\n`;
-              }
-              
-              if (topic.dominantSentiment) {
-                topicsMessage += `   • Sentiment: ${getSentimentEmoji(topic.dominantSentiment)}\n`;
-              }
-              
-              // Show related topics if available
-              if (topic.relatedTopics && topic.relatedTopics.length > 0) {
-                const relatedTopicsList = topic.relatedTopics
-                  .map(rt => escapeTopicMarkdown(rt.topic))
-                  .join(', ');
-                topicsMessage += `   • Related to: ${relatedTopicsList}\n`;
-              }
-              
-              // Add a sample message if available
-              if (topic.sampleMessages && topic.sampleMessages.length > 0) {
-                const sampleMsg = topic.sampleMessages[0];
-                topicsMessage += `   • Example: "_${escapeTopicMarkdown(sampleMsg.text.substring(0, 60))}..._"\n`;
-              }
-              
-              // Add activity info
-              if (topic.daysActive && topic.messagesPerDay) {
-                topicsMessage += `   • Activity: ${topic.messagesPerDay} msgs/day over ${topic.daysActive} days\n`;
-              } else {
-                topicsMessage += `   • Last mentioned: ${lastMentioned}\n`;
-              }
-              
-              topicsMessage += '\n';
-            });
-            
-            // If there are more topics in this category, mention them
-            if (category.topics.length > 3) {
-              const additionalCount = category.topics.length - 3;
-              const additionalTopics = category.topics
-                .slice(3, 6)
-                .map(t => escapeTopicMarkdown(t._id))
+            // Show related topics if available
+            if (topic.relatedTopics && topic.relatedTopics.length > 0) {
+              const relatedTopicsList = topic.relatedTopics
+                .map(rt => escapeTopicMarkdown(rt.topic))
                 .join(', ');
-              
-              topicsMessage += `_...and ${additionalCount} more topics including ${additionalTopics}${additionalCount > 3 ? '...' : ''}_\n`;
+              topicsMessage += `   • Related to: ${relatedTopicsList}\n`;
+            }
+            
+            // Add a sample message if available
+            if (topic.sampleMessages && topic.sampleMessages.length > 0) {
+              const sampleMsg = topic.sampleMessages[0];
+              topicsMessage += `   • Example: "_${escapeTopicMarkdown(sampleMsg.text.substring(0, 60))}..._"\n`;
+            }
+            
+            // Add activity info
+            if (topic.daysActive && topic.messagesPerDay) {
+              topicsMessage += `   • Activity: ${topic.messagesPerDay} msgs/day over ${topic.daysActive} days\n`;
+            } else {
+              topicsMessage += `   • Last mentioned: ${lastMentioned}\n`;
             }
             
             topicsMessage += '\n';
+          });
+          
+          // If there are more topics in this category, mention them
+          if (category.topics.length > 3) {
+            const additionalCount = category.topics.length - 3;
+            const additionalTopics = category.topics
+              .slice(3, 6)
+              .map(t => escapeTopicMarkdown(t._id))
+              .join(', ');
+            
+            topicsMessage += `_...and ${additionalCount} more topics including ${additionalTopics}${additionalCount > 3 ? '...' : ''}_\n`;
           }
+          
+          topicsMessage += '\n';
         }
         
-        // Add insights summary
-        topicsMessage += `*AI Insights:*\n`;
-        
-        // Check for contract addresses or apparent token addresses in topics
-        const contractLikeTopics = topics.filter(t => isContractAddress(t._id));
-        
-        if (contractLikeTopics.length > 0) {
-          const topContractTopics = contractLikeTopics
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 3)
-            .map(t => {
-              // Format contract addresses for readability
-              const addr = t._id;
-              return escapeTopicMarkdown(addr.substring(0, 8) + '...' + addr.substring(addr.length - 5));
-            })
-            .join(', ');
-          
-          const solanaCount = contractLikeTopics.filter(t => !t._id.startsWith('0x')).length;
-          const ethereumCount = contractLikeTopics.filter(t => t._id.startsWith('0x')).length;
-          
-          topicsMessage += `- *Token Activity:* ${contractLikeTopics.length} contract addresses mentioned (${solanaCount} Solana, ${ethereumCount} Ethereum)\n`;
-          topicsMessage += `- *Top Tokens:* ${topContractTopics}\n`;
-        }
+        // Add Solana-specific insights summary
+        topicsMessage += `*Solana Trading Insights:*\n`;
         
         // Analyze memecoin topics for trading patterns
         const memecoinTopics = topics.filter(t => 
-          categories.memecoin.regex.test(t._id)
+          categories.memecoin.regex.test(t._id) && !t.isContract
         );
         
         if (memecoinTopics.length > 0) {
@@ -1076,8 +1201,8 @@ _Use /topics for detailed topic analysis_`;
             const mostActive = tradingActivity.sort((a, b) => b.count - a.count)[0]?._id || '';
             
             topicsMessage += `- *Trading Activity:* ${tradingActivity.length} tokens with ${tradingVolume} trading signals\n`;
-            if (mostActive && !isContractAddress(mostActive)) {
-              topicsMessage += `- *Hottest Token:* ${escapeTopicMarkdown(mostActive)}\n`;
+            if (mostActive && !mostActive.isContract) {
+              topicsMessage += `- *Hottest Topic:* ${escapeTopicMarkdown(mostActive)}\n`;
             }
           }
           
@@ -1092,27 +1217,40 @@ _Use /topics for detailed topic analysis_`;
           }
         }
         
+        // Positive/bullish vs negative/bearish sentiment analysis
+        const bullishTerms = ["bullish", "buy", "pump", "up", "moon", "lambo", "rich", "gains", "win", "winning", "gem"];
+        const bearishTerms = ["bearish", "dump", "sell", "down", "crash", "rugpull", "rug", "scam", "loss", "rekt"];
+        
+        const bullishTopics = topics.filter(t => 
+          bullishTerms.some(term => t._id.toLowerCase().includes(term))
+        );
+        
+        const bearishTopics = topics.filter(t => 
+          bearishTerms.some(term => t._id.toLowerCase().includes(term))
+        );
+        
+        const bullishCount = bullishTopics.reduce((sum, t) => sum + t.count, 0);
+        const bearishCount = bearishTopics.reduce((sum, t) => sum + t.count, 0);
+        
+        if (bullishCount > 0 || bearishCount > 0) {
+          const sentiment = bullishCount > bearishCount ? 'Bullish' : 
+                           bearishCount > bullishCount ? 'Bearish' : 'Neutral';
+          const ratio = Math.max(bullishCount, bearishCount) / (bullishCount + bearishCount);
+          const strength = ratio > 0.8 ? 'strongly' : 
+                          ratio > 0.6 ? 'moderately' : 'slightly';
+          
+          topicsMessage += `- *Market Sentiment:* ${strength} ${sentiment.toLowerCase()} (${bullishCount} bullish vs ${bearishCount} bearish signals)\n`;
+        }
+        
         // Regular trending topics
-        if (topics.some(t => t.trending === 'up')) {
+        if (topics.some(t => t.trending === 'up' && !t.isContract)) {
           const trendingTopics = topics
-            .filter(t => t.trending === 'up')
+            .filter(t => t.trending === 'up' && !t.isContract)
             .map(t => escapeTopicMarkdown(t._id))
             .slice(0, 3)
             .join(', ');
           
           topicsMessage += `- *Trending Discussions:* ${trendingTopics}\n`;
-        }
-        
-        // Add sentiment overview
-        const positiveSentimentTopics = topics.filter(t => t.dominantSentiment === 'positive').length;
-        const negativeSentimentTopics = topics.filter(t => t.dominantSentiment === 'negative').length;
-        
-        if (positiveSentimentTopics > negativeSentimentTopics) {
-          topicsMessage += `- *Sentiment Analysis:* Overall positive discussions across ${positiveSentimentTopics} topics\n`;
-        } else if (negativeSentimentTopics > positiveSentimentTopics) {
-          topicsMessage += `- *Sentiment Analysis:* Several topics (${negativeSentimentTopics}) show negative sentiment\n`;
-        } else {
-          topicsMessage += `- *Sentiment Analysis:* Balanced sentiment across discussions\n`;
         }
         
         topicsMessage += `\n_Analysis based on ${totalMentions} topic mentions across ${topics.length} unique topics_`;
@@ -1972,6 +2110,17 @@ _Use /topics for detailed topic analysis_`;
                 general: {
                   name: "General Topics",
                   topics: []
+                },
+                // New specialized categories for Solana trading groups
+                tickers: {
+                  name: "Token Tickers",
+                  topics: [],
+                  regex: /\$[A-Za-z0-9_]{2,10}\b|^[A-Z0-9]{2,8}$|\b(?:SOL|BTC|ETH|USDC|USDT|BONK|WIF|JTO|BOME|SHDW|PYTH|RAY|JUP|MNGO|AURY|DUST)[^a-zA-Z0-9]/i
+                },
+                contracts: {
+                  name: "Contract Addresses",
+                  topics: [],
+                  hidden: true // We'll process but not display these directly
                 }
               };
               
@@ -1979,32 +2128,104 @@ _Use /topics for detailed topic analysis_`;
               const isContractAddress = (topicId) => {
                 // Solana addresses (base58 encoded, 32-44 chars)
                 if (/^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(topicId)) {
-                  return true;
+                  return {isContract: true, type: 'solana'};
                 }
                 // Ethereum style addresses (0x followed by 40 hex chars)
                 if (/^(0x)?[a-fA-F0-9]{40}$/.test(topicId)) {
-                  return true;
+                  return {isContract: true, type: 'ethereum'};
                 }
                 // Memecoin contract addresses often have "pump" in them
                 if (/^[A-Za-z0-9]{30,}pump$/i.test(topicId)) {
-                  return true;
+                  return {isContract: true, type: 'other'};
                 }
-                return false;
+                return {isContract: false};
               };
 
-              // Pre-process topics to identify contract addresses
+              // Helper function to identify ticker symbols
+              const isTicker = (topicId) => {
+                // Matches $XXX format or standard ticker formats
+                if (/^\$[A-Za-z0-9_]{2,10}$/.test(topicId)) {
+                  return {isTicker: true, symbol: topicId.substring(1), hasPrefix: true};
+                }
+                // All caps 2-8 characters that could be tickers
+                if (/^[A-Z0-9]{2,8}$/.test(topicId)) {
+                  return {isTicker: true, symbol: topicId, hasPrefix: false};
+                }
+                // Known common token tickers
+                if (/^(SOL|BTC|ETH|USDC|USDT|BONK|WIF|JTO|BOME|SHDW|PYTH|RAY|JUP|MNGO|AURY|DUST)$/.test(topicId)) {
+                  return {isTicker: true, symbol: topicId, hasPrefix: false, isCommon: true};
+                }
+                return {isTicker: false};
+              };
+
+              // Pre-process topics to identify and categorize contract addresses and tickers
+              let contractAddresses = {
+                solana: [],
+                ethereum: [],
+                other: []
+              };
+              
+              let tickerSymbols = {};
+              let mentionedTickers = new Set();
+
+              // First pass: identify contracts and tickers
               topics.forEach(topic => {
-                if (isContractAddress(topic._id)) {
+                const contractCheck = isContractAddress(topic._id);
+                const tickerCheck = isTicker(topic._id);
+                
+                if (contractCheck.isContract) {
                   topic.isContract = true;
-                  topic.contractType = topic._id.startsWith('0x') ? 'ethereum' : 'solana';
+                  topic.contractType = contractCheck.type;
+                  contractAddresses[contractCheck.type].push(topic);
+                  categories.contracts.topics.push(topic);
+                } 
+                else if (tickerCheck.isTicker) {
+                  topic.isTicker = true;
+                  topic.symbol = tickerCheck.symbol;
+                  topic.hasPrefix = tickerCheck.hasPrefix;
+                  topic.isCommon = tickerCheck.isCommon || false;
+                  
+                  // Store in tickers category
+                  categories.tickers.topics.push(topic);
+                  
+                  // Keep count of mentions by symbol (normalizing to uppercase)
+                  const normalizedSymbol = tickerCheck.symbol.toUpperCase();
+                  mentionedTickers.add(normalizedSymbol);
+                  
+                  if (!tickerSymbols[normalizedSymbol]) {
+                    tickerSymbols[normalizedSymbol] = {
+                      count: topic.count,
+                      topics: [topic],
+                      sentiment: topic.dominantSentiment || 'neutral',
+                      lastMentioned: topic.lastMentioned,
+                      trending: topic.trending || 'stable'
+                    };
+                  } else {
+                    tickerSymbols[normalizedSymbol].count += topic.count;
+                    tickerSymbols[normalizedSymbol].topics.push(topic);
+                    // Use the most recent mention date
+                    if (topic.lastMentioned > tickerSymbols[normalizedSymbol].lastMentioned) {
+                      tickerSymbols[normalizedSymbol].lastMentioned = topic.lastMentioned;
+                    }
+                    // Favor trending status if any form of the ticker is trending
+                    if (topic.trending === 'up') {
+                      tickerSymbols[normalizedSymbol].trending = 'up';
+                    }
+                  }
                 }
               });
               
-              // Categorize each topic
+              // Second pass: categorize remaining topics that aren't contracts or tickers
               topics.forEach(topic => {
+                // Skip if already categorized as contract or ticker
+                if (topic.isContract || topic.isTicker) return;
+                
                 let categorized = false;
                 for (const [key, category] of Object.entries(categories)) {
-                  if (key !== 'general' && category.regex && category.regex.test(topic._id)) {
+                  // Skip the contract and ticker categories, and general (saved for fallback)
+                  if (key === 'contracts' || key === 'tickers' || key === 'general') continue;
+                  
+                  if (category.regex && category.regex.test(topic._id)) {
                     category.topics.push(topic);
                     categorized = true;
                     break;
@@ -2046,103 +2267,145 @@ _Use /topics for detailed topic analysis_`;
               // Find total topic mentions for percentages
               const totalMentions = topics.reduce((sum, topic) => sum + topic.count, 0);
               
-              for (const category of Object.values(categories)) {
-                if (category.topics.length > 0) {
-                  // Get most discussed topic in this category
-                  const mostDiscussed = [...category.topics].sort((a, b) => b.count - a.count)[0];
+              // First, show a summary of token tickers if this is a trading group
+              if (categories.tickers.topics.length > 0) {
+                // Sort tickers by count
+                const sortedTickers = Object.entries(tickerSymbols)
+                  .sort((a, b) => b[1].count - a[1].count)
+                  .slice(0, 8); // Take top 8 tickers
+                
+                topicsMessage += `*Most Discussed Tokens*\n`;
+                
+                sortedTickers.forEach(([symbol, data], index) => {
+                  const percentage = Math.round((data.count / totalMentions) * 100);
+                  const trending = data.trending === 'up' ? ' 📈' : '';
+                  const sentiment = data.sentiment === 'positive' ? ' ✅' : 
+                                   data.sentiment === 'negative' ? ' 🔴' : '';
                   
-                  topicsMessage += `*${category.name}*`;
+                  topicsMessage += `${index+1}. *$${escapeTopicMarkdown(symbol)}*: ${data.count} mentions (${percentage}%)${trending}${sentiment}\n`;
+                });
+                
+                topicsMessage += `\n_Total unique tokens: ${mentionedTickers.size}_\n\n`;
+              }
+              
+              // Process contract addresses for insight rather than direct display
+              const contractCount = contractAddresses.solana.length + contractAddresses.ethereum.length + contractAddresses.other.length;
+              
+              if (contractCount > 0) {
+                // Calculate trending contracts
+                const trendingContracts = categories.contracts.topics.filter(t => t.trending === 'up');
+                const topContracts = categories.contracts.topics
+                  .sort((a, b) => b.count - a.count)
+                  .slice(0, 3);
+                
+                // Rather than listing all the contracts, provide insight
+                topicsMessage += `*Contract Activity*\n`;
+                topicsMessage += `- ${contractAddresses.solana.length} Solana ${contractAddresses.solana.length === 1 ? 'address' : 'addresses'} mentioned\n`;
+                if (contractAddresses.ethereum.length > 0) {
+                  topicsMessage += `- ${contractAddresses.ethereum.length} Ethereum ${contractAddresses.ethereum.length === 1 ? 'address' : 'addresses'} mentioned\n`;
+                }
+                
+                if (trendingContracts.length > 0) {
+                  topicsMessage += `- ${trendingContracts.length} trending contract ${trendingContracts.length === 1 ? 'address' : 'addresses'}\n`;
+                }
+                
+                // For the top contracts, show a short preview of the address
+                if (topContracts.length > 0) {
+                  topicsMessage += `\n*Top Contract Activity:*\n`;
+                  topContracts.forEach((contract, i) => {
+                    const addr = contract._id;
+                    const shortAddr = addr.substring(0, 6) + '...' + addr.substring(addr.length - 4);
+                    const type = contract.contractType === 'solana' ? 'Solana' : 
+                                 contract.contractType === 'ethereum' ? 'ETH' : 'Other';
+                    
+                    topicsMessage += `${i+1}. \`${shortAddr}\` (${type}): ${contract.count} mentions\n`;
+                  });
+                }
+                
+                topicsMessage += '\n';
+              }
+              
+              // Now process the regular topic categories
+              for (const [key, category] of Object.entries(categories)) {
+                // Skip the hidden categories and empty categories
+                if (category.hidden || category.topics.length === 0 || key === 'tickers') continue;
+                
+                // Get most discussed topic in this category
+                const mostDiscussed = [...category.topics].sort((a, b) => b.count - a.count)[0];
+                
+                topicsMessage += `*${category.name}*`;
+                
+                if (mostDiscussed && mostDiscussed.trending === 'up') {
+                  topicsMessage += ` [TRENDING]`;
+                }
+                
+                topicsMessage += `\n`;
+                
+                // Format each topic with enhanced details
+                category.topics.slice(0, 3).forEach((topic, i) => {
+                  // Skip contract addresses - we already handled them differently
+                  if (topic.isContract) return;
                   
-                  if (mostDiscussed.trending === 'up') {
-                    topicsMessage += ` [TRENDING]`;
+                  const lastMentioned = new Date(topic.lastMentioned).toLocaleDateString();
+                  const percentage = Math.round((topic.count / totalMentions) * 100);
+                  
+                  // Topic header with stats
+                  topicsMessage += `${i+1}. *${escapeTopicMarkdown(topic._id)}* ${getTrendingEmoji(topic.trending)}\n`;
+                  topicsMessage += `   • Mentions: ${topic.count} (${percentage}% of all topics)\n`;
+                  
+                  // Only show these fields if they exist (enhanced analysis)
+                  if (topic.uniqueUserCount) {
+                    topicsMessage += `   • Discussed by: ${topic.uniqueUserCount} members\n`;
                   }
                   
-                  topicsMessage += `\n`;
+                  if (topic.dominantSentiment) {
+                    topicsMessage += `   • Sentiment: ${getSentimentEmoji(topic.dominantSentiment)}\n`;
+                  }
                   
-                  // Format each topic with enhanced details
-                  category.topics.slice(0, 3).forEach((topic, i) => {
-                    const lastMentioned = new Date(topic.lastMentioned).toLocaleDateString();
-                    const percentage = Math.round((topic.count / totalMentions) * 100);
-                    
-                    // Topic header with stats
-                    topicsMessage += `${i+1}. *${escapeTopicMarkdown(topic._id)}* ${getTrendingEmoji(topic.trending)}\n`;
-                    topicsMessage += `   • Mentions: ${topic.count} (${percentage}% of all topics)\n`;
-                    
-                    // Only show these fields if they exist (enhanced analysis)
-                    if (topic.uniqueUserCount) {
-                      topicsMessage += `   • Discussed by: ${topic.uniqueUserCount} members\n`;
-                    }
-                    
-                    if (topic.dominantSentiment) {
-                      topicsMessage += `   • Sentiment: ${getSentimentEmoji(topic.dominantSentiment)}\n`;
-                    }
-                    
-                    // Show related topics if available
-                    if (topic.relatedTopics && topic.relatedTopics.length > 0) {
-                      const relatedTopicsList = topic.relatedTopics
-                        .map(rt => escapeTopicMarkdown(rt.topic))
-                        .join(', ');
-                      topicsMessage += `   • Related to: ${relatedTopicsList}\n`;
-                    }
-                    
-                    // Add a sample message if available
-                    if (topic.sampleMessages && topic.sampleMessages.length > 0) {
-                      const sampleMsg = topic.sampleMessages[0];
-                      topicsMessage += `   • Example: "_${escapeTopicMarkdown(sampleMsg.text.substring(0, 60))}..._"\n`;
-                    }
-                    
-                    // Add activity info
-                    if (topic.daysActive && topic.messagesPerDay) {
-                      topicsMessage += `   • Activity: ${topic.messagesPerDay} msgs/day over ${topic.daysActive} days\n`;
-                    } else {
-                      topicsMessage += `   • Last mentioned: ${lastMentioned}\n`;
-                    }
-                    
-                    topicsMessage += '\n';
-                  });
-                  
-                  // If there are more topics in this category, mention them
-                  if (category.topics.length > 3) {
-                    const additionalCount = category.topics.length - 3;
-                    const additionalTopics = category.topics
-                      .slice(3, 6)
-                      .map(t => escapeTopicMarkdown(t._id))
+                  // Show related topics if available
+                  if (topic.relatedTopics && topic.relatedTopics.length > 0) {
+                    const relatedTopicsList = topic.relatedTopics
+                      .map(rt => escapeTopicMarkdown(rt.topic))
                       .join(', ');
-                    
-                    topicsMessage += `_...and ${additionalCount} more topics including ${additionalTopics}${additionalCount > 3 ? '...' : ''}_\n`;
+                    topicsMessage += `   • Related to: ${relatedTopicsList}\n`;
+                  }
+                  
+                  // Add a sample message if available
+                  if (topic.sampleMessages && topic.sampleMessages.length > 0) {
+                    const sampleMsg = topic.sampleMessages[0];
+                    topicsMessage += `   • Example: "_${escapeTopicMarkdown(sampleMsg.text.substring(0, 60))}..._"\n`;
+                  }
+                  
+                  // Add activity info
+                  if (topic.daysActive && topic.messagesPerDay) {
+                    topicsMessage += `   • Activity: ${topic.messagesPerDay} msgs/day over ${topic.daysActive} days\n`;
+                  } else {
+                    topicsMessage += `   • Last mentioned: ${lastMentioned}\n`;
                   }
                   
                   topicsMessage += '\n';
+                });
+                
+                // If there are more topics in this category, mention them
+                if (category.topics.length > 3) {
+                  const additionalCount = category.topics.length - 3;
+                  const additionalTopics = category.topics
+                    .slice(3, 6)
+                    .map(t => escapeTopicMarkdown(t._id))
+                    .join(', ');
+                  
+                  topicsMessage += `_...and ${additionalCount} more topics including ${additionalTopics}${additionalCount > 3 ? '...' : ''}_\n`;
                 }
+                
+                topicsMessage += '\n';
               }
               
-              // Add insights summary
-              topicsMessage += `*AI Insights:*\n`;
-              
-              // Check for contract addresses or apparent token addresses in topics
-              const contractLikeTopics = topics.filter(t => isContractAddress(t._id));
-              
-              if (contractLikeTopics.length > 0) {
-                const topContractTopics = contractLikeTopics
-                  .sort((a, b) => b.count - a.count)
-                  .slice(0, 3)
-                  .map(t => {
-                    // Format contract addresses for readability
-                    const addr = t._id;
-                    return escapeTopicMarkdown(addr.substring(0, 8) + '...' + addr.substring(addr.length - 5));
-                  })
-                  .join(', ');
-                
-                const solanaCount = contractLikeTopics.filter(t => !t._id.startsWith('0x')).length;
-                const ethereumCount = contractLikeTopics.filter(t => t._id.startsWith('0x')).length;
-                
-                topicsMessage += `- *Token Activity:* ${contractLikeTopics.length} contract addresses mentioned (${solanaCount} Solana, ${ethereumCount} Ethereum)\n`;
-                topicsMessage += `- *Top Tokens:* ${topContractTopics}\n`;
-              }
+              // Add Solana-specific insights summary
+              topicsMessage += `*Solana Trading Insights:*\n`;
               
               // Analyze memecoin topics for trading patterns
               const memecoinTopics = topics.filter(t => 
-                categories.memecoin.regex.test(t._id)
+                categories.memecoin.regex.test(t._id) && !t.isContract
               );
               
               if (memecoinTopics.length > 0) {
@@ -2156,8 +2419,8 @@ _Use /topics for detailed topic analysis_`;
                   const mostActive = tradingActivity.sort((a, b) => b.count - a.count)[0]?._id || '';
                   
                   topicsMessage += `- *Trading Activity:* ${tradingActivity.length} tokens with ${tradingVolume} trading signals\n`;
-                  if (mostActive && !isContractAddress(mostActive)) {
-                    topicsMessage += `- *Hottest Token:* ${escapeTopicMarkdown(mostActive)}\n`;
+                  if (mostActive && !mostActive.isContract) {
+                    topicsMessage += `- *Hottest Topic:* ${escapeTopicMarkdown(mostActive)}\n`;
                   }
                 }
                 
@@ -2173,9 +2436,9 @@ _Use /topics for detailed topic analysis_`;
               }
               
               // Regular trending topics
-              if (topics.some(t => t.trending === 'up')) {
+              if (topics.some(t => t.trending === 'up' && !t.isContract)) {
                 const trendingTopics = topics
-                  .filter(t => t.trending === 'up')
+                  .filter(t => t.trending === 'up' && !t.isContract)
                   .map(t => escapeTopicMarkdown(t._id))
                   .slice(0, 3)
                   .join(', ');
