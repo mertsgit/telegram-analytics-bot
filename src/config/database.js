@@ -1,5 +1,9 @@
 const mongoose = require('mongoose');
+const { createLogger } = require('../utils/logger');
 require('dotenv').config();
+
+// Create database-specific logger
+const logger = createLogger('database');
 
 // Track connection state
 let isConnected = false;
@@ -12,7 +16,7 @@ const connectDB = async () => {
   try {
     // Skip if already connected
     if (isConnected && mongoose.connection.readyState === 1) {
-      console.log('MongoDB is already connected');
+      logger.debug('MongoDB is already connected');
       return true;
     }
 
@@ -27,7 +31,7 @@ const connectDB = async () => {
       reconnectAttempts = 0;
     }
 
-    console.log(`Attempting to connect to MongoDB... (Attempt ${reconnectAttempts + 1})`);
+    logger.info(`Attempting to connect to MongoDB... (Attempt ${reconnectAttempts + 1})`);
 
     const conn = await mongoose.connect(process.env.MONGODB_URI, {
       // Improve connection resilience with these options
@@ -44,23 +48,23 @@ const connectDB = async () => {
     
     isConnected = true;
     reconnectAttempts = 0;
-    console.log(`MongoDB Connected: ${conn.connection.host}`);
+    logger.info(`MongoDB Connected: ${conn.connection.host}`);
 
     // Set up connection event listeners
     mongoose.connection.on('disconnected', () => {
-      console.error('MongoDB disconnected! Attempting to reconnect...');
+      logger.error('MongoDB disconnected! Attempting to reconnect...');
       isConnected = false;
       scheduleReconnect();
     });
 
     mongoose.connection.on('error', (err) => {
-      console.error(`MongoDB connection error: ${err.message}`);
+      logger.error(`MongoDB connection error: ${err.message}`);
       isConnected = false;
       scheduleReconnect();
     });
 
     mongoose.connection.on('connected', () => {
-      console.log('MongoDB connection restored');
+      logger.info('MongoDB connection restored');
       isConnected = true;
       reconnectAttempts = 0;
       
@@ -72,7 +76,7 @@ const connectDB = async () => {
     });
 
     mongoose.connection.on('reconnected', () => {
-      console.log('MongoDB reconnected');
+      logger.info('MongoDB reconnected');
       isConnected = true;
       reconnectAttempts = 0;
     });
@@ -81,27 +85,27 @@ const connectDB = async () => {
   } catch (error) {
     isConnected = false;
     const errorMessage = `Error connecting to MongoDB: ${error.message}`;
-    console.error(errorMessage);
+    logger.error(errorMessage);
     
     // More detailed error handling based on error type
     if (error.name === 'MongoNetworkError') {
-      console.error('Network error connecting to MongoDB. Please check your internet connection or MongoDB Atlas status.');
+      logger.error('Network error connecting to MongoDB. Please check your internet connection or MongoDB Atlas status.');
     } else if (error.name === 'MongoServerSelectionError') {
-      console.error('Could not select a MongoDB server. Please check your connection string and ensure the cluster is running.');
+      logger.error('Could not select a MongoDB server. Please check your connection string and ensure the cluster is running.');
     } else if (error.message.includes('Authentication failed')) {
-      console.error('MongoDB authentication failed. Please check your username and password in the connection string.');
+      logger.error('MongoDB authentication failed. Please check your username and password in the connection string.');
     } else if (error.message.includes('option') && error.message.includes('not supported')) {
-      console.error('MongoDB driver compatibility issue detected. Using simplified connection options.');
+      logger.warn('MongoDB driver compatibility issue detected. Using simplified connection options.');
       // Try connecting with minimal options if an option is not supported
       try {
-        console.log('Attempting simplified MongoDB connection...');
+        logger.info('Attempting simplified MongoDB connection...');
         await mongoose.connect(process.env.MONGODB_URI);
         isConnected = true;
         reconnectAttempts = 0;
-        console.log('MongoDB Connected with simplified options');
+        logger.info('MongoDB Connected with simplified options');
         return true;
       } catch (simpleConnError) {
-        console.error(`Simplified connection also failed: ${simpleConnError.message}`);
+        logger.error(`Simplified connection also failed: ${simpleConnError.message}`);
       }
     }
     
@@ -122,22 +126,22 @@ const scheduleReconnect = () => {
   reconnectAttempts++;
   
   if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
-    console.log(`Scheduling MongoDB reconnection attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${RECONNECT_INTERVAL/1000} seconds...`);
+    logger.info(`Scheduling MongoDB reconnection attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${RECONNECT_INTERVAL/1000} seconds...`);
     
     // Use exponential backoff with a maximum interval
     const delay = Math.min(RECONNECT_INTERVAL * Math.pow(1.5, reconnectAttempts - 1), 60000); // Max 1 minute
     
     reconnectTimer = setTimeout(async () => {
-      console.log(`Executing scheduled reconnection attempt ${reconnectAttempts}...`);
+      logger.info(`Executing scheduled reconnection attempt ${reconnectAttempts}...`);
       await connectDB();
     }, delay);
   } else {
-    console.error(`Maximum reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Please check your database connection.`);
+    logger.error(`Maximum reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Please check your database connection.`);
     
     // Reset counter but schedule one final attempt after a longer delay
     reconnectAttempts = 0;
     reconnectTimer = setTimeout(async () => {
-      console.log('Making a final attempt to reconnect to MongoDB...');
+      logger.info('Making a final attempt to reconnect to MongoDB...');
       await connectDB();
     }, 120000); // 2 minutes
   }
@@ -150,14 +154,14 @@ const isDBConnected = () => {
 
 // Force a reconnection attempt
 const forceReconnect = async () => {
-  console.log('Forcing reconnection to MongoDB...');
+  logger.info('Forcing reconnection to MongoDB...');
   isConnected = false;
   
   if (mongoose.connection.readyState !== 0) {
     try {
       await mongoose.connection.close();
     } catch (err) {
-      console.error('Error closing existing MongoDB connection:', err.message);
+      logger.error('Error closing existing MongoDB connection:', err.message);
     }
   }
   

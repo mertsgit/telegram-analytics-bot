@@ -23,6 +23,25 @@ let ALLOWED_GROUP_IDS = [
 const OWNER_ID = 5348052974;
 // --- End Authorization Configuration ---
 
+// --- Helper Functions ---
+// Helper function to check if a topic is likely a contract address
+const isContractAddress = (topicId) => {
+  // Solana addresses (base58 encoded, 32-44 chars)
+  if (/^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(topicId)) {
+    return true;
+  }
+  // Ethereum style addresses (0x followed by 40 hex chars)
+  if (/^(0x)?[a-fA-F0-9]{40}$/.test(topicId)) {
+    return true;
+  }
+  // Memecoin contract addresses often have "pump" in them
+  if (/^[A-Za-z0-9]{30,}pump$/i.test(topicId)) {
+    return true;
+  }
+  return false;
+};
+// --- End Helper Functions ---
+
 // Payment states tracking - to track conversation state during payment process
 const paymentStates = new Map();
 
@@ -889,23 +908,6 @@ _Use /topics for detailed topic analysis_`;
           }
         };
         
-        // Helper function to check if a topic is likely a contract address
-        const isContractAddress = (topicId) => {
-          // Solana addresses (base58 encoded, 32-44 chars)
-          if (/^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(topicId)) {
-            return true;
-          }
-          // Ethereum style addresses (0x followed by 40 hex chars)
-          if (/^(0x)?[a-fA-F0-9]{40}$/.test(topicId)) {
-            return true;
-          }
-          // Memecoin contract addresses often have "pump" in them
-          if (/^[A-Za-z0-9]{30,}pump$/i.test(topicId)) {
-            return true;
-          }
-          return false;
-        };
-
         // Pre-process topics to identify contract addresses
         topics.forEach(topic => {
           if (isContractAddress(topic._id)) {
@@ -1226,160 +1228,6 @@ _Data from CoinGecko_
       } catch (error) {
         console.error(`Error handling price command: ${error.message}`);
         await ctx.reply('Sorry, there was an error processing your request. Please try again later.');
-      }
-    });
-
-    // Add subscribe command handler
-    bot.command('subscribe', async (ctx) => {
-      try {
-        console.log(`Subscribe command received in chat ${ctx.chat.id} by user ${ctx.from.id}`);
-        
-        // Only allow in private chat
-        if (ctx.chat.type !== 'private') {
-          return await ctx.reply('Please use this command in a private chat with the bot.');
-        }
-        
-        // Start payment wizard
-        await startPaymentWizard(ctx);
-      } catch (error) {
-        console.error(`Error handling subscribe command: ${error.message}`);
-        await ctx.reply('Sorry, there was an error processing your subscription request. Please try again later.');
-      }
-    });
-    
-    // Add verify command handler
-    bot.command('verify', async (ctx) => {
-      try {
-        console.log(`Verify command received in chat ${ctx.chat.id} by user ${ctx.from.id}`);
-        
-        // Only allow in private chat
-        if (ctx.chat.type !== 'private') {
-          return await ctx.reply('Please use this command in a private chat with the bot.');
-        }
-        
-        const userId = ctx.from.id;
-        const paymentState = paymentStates.get(userId);
-        
-        if (!paymentState || !paymentState.waitingForTransaction) {
-          return await ctx.reply(
-            'Please start the subscription process first with /subscribe command.'
-          );
-        }
-        
-        // Extract transaction signature
-        const args = ctx.message.text.split(' ');
-        if (args.length < 2) {
-          return await ctx.reply(
-            'Please provide a transaction signature. Usage: /verify <transaction_signature>'
-          );
-        }
-        
-        const transactionSignature = args[1].trim();
-        
-        // Check for existing transaction
-        const transactionUsed = await Payment.isTransactionUsed(transactionSignature);
-        if (transactionUsed) {
-          return await ctx.reply('This transaction has already been used for another subscription.');
-        }
-        
-        // Check transaction validity
-        await ctx.reply('⏳ Verifying your transaction. This may take a moment...');
-        
-        const verification = await verifyPaymentTransaction(
-          transactionSignature, 
-          paymentState.solanaWallet,
-          paymentState.paymentType
-        );
-        
-        if (!verification.isValid) {
-          return await ctx.reply(`❌ Transaction verification failed: ${verification.message}`);
-        }
-        
-        // Calculate expiration date
-        const expirationDate = calculateExpirationDate(paymentState.paymentType);
-        
-        // Update payment record
-        await Payment.findByIdAndUpdate(
-          paymentState.paymentId,
-          {
-            paymentStatus: 'verified',
-            transactionId: transactionSignature,
-            transactionSignature: transactionSignature,
-            verificationDate: new Date(),
-            expirationDate: expirationDate,
-            verificationNotes: `Verified manually by user. Amount: ${verification.details.amount} SOL`
-          }
-        );
-        
-        // Add group to allowed list
-        if (!ALLOWED_GROUP_IDS.includes(paymentState.groupId)) {
-          ALLOWED_GROUP_IDS.push(paymentState.groupId);
-        }
-        
-        // Clear payment state
-        paymentStates.delete(userId);
-        
-        // Send success message
-        const subscriptionEndDate = expirationDate.toLocaleDateString();
-        await ctx.reply(
-          `✅ Payment verified successfully!\n\n` +
-          `Your subscription for "${paymentState.groupTitle}" is now active until ${subscriptionEndDate}.\n\n` +
-          `You can now add the bot to your group or keep using it if it's already added.`
-        );
-      } catch (error) {
-        console.error(`Error handling verify command: ${error.message}`);
-        await ctx.reply('Sorry, there was an error verifying your payment. Please try again later or contact support.');
-      }
-    });
-
-    // Add subscription command handler
-    bot.command('subscription', async (ctx) => {
-      try {
-        console.log(`Subscription command received in chat ${ctx.chat.id} by user ${ctx.from.id}`);
-        
-        const isPrivateChat = ctx.chat.type === 'private';
-        const isOwner = ctx.from.id === OWNER_ID;
-        
-        // In private chat, admin must select a group
-        if (isPrivateChat) {
-          if (isOwner) {
-            // For owner, show all subscriptions
-            await showAllSubscriptions(ctx);
-            return;
-          }
-          
-          // For regular users, check if they're admin in any groups
-          const adminGroups = await isGroupAdmin(ctx.from.id);
-          
-          if (!adminGroups) {
-            return await ctx.reply('You are not an admin of any group with an active subscription.');
-          }
-          
-          // If only one group, show subscription for that
-          if (adminGroups.length === 1) {
-            const groupId = adminGroups[0].id;
-            await showSubscriptionForGroup(ctx, groupId);
-            return;
-          }
-          
-          // If multiple groups, prompt selection
-          const selectedGroupId = await promptGroupSelection(ctx, ctx.from.id, 'subscription');
-          
-          if (!selectedGroupId) {
-            // Selection is pending
-            return;
-          }
-          
-          await showSubscriptionForGroup(ctx, selectedGroupId);
-          return;
-        }
-        
-        // In group chat, show subscription for current group
-        const groupId = ctx.chat.id;
-        await showSubscriptionForGroup(ctx, groupId);
-      } catch (error) {
-        console.error(`Error handling subscription command: ${error.message}`);
-        await ctx.reply('Sorry, there was an error retrieving subscription information. Please try again later.');
       }
     });
 
@@ -2117,23 +1965,6 @@ _Use /topics for detailed topic analysis_`;
                 }
               };
               
-              // Helper function to check if a topic is likely a contract address
-              const isContractAddress = (topicId) => {
-                // Solana addresses (base58 encoded, 32-44 chars)
-                if (/^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(topicId)) {
-                  return true;
-                }
-                // Ethereum style addresses (0x followed by 40 hex chars)
-                if (/^(0x)?[a-fA-F0-9]{40}$/.test(topicId)) {
-                  return true;
-                }
-                // Memecoin contract addresses often have "pump" in them
-                if (/^[A-Za-z0-9]{30,}pump$/i.test(topicId)) {
-                  return true;
-                }
-                return false;
-              };
-
               // Pre-process topics to identify contract addresses
               topics.forEach(topic => {
                 if (isContractAddress(topic._id)) {
@@ -2568,84 +2399,114 @@ _Data from CoinGecko_
             
           case 'verify':
             try {
-              // Only allow in private chat
-              if (ctx.chat.type !== 'private') {
-                return await ctx.reply('Please use this command in a private chat with the bot.');
+              const message = ctx.message.text.trim();
+              const parts = message.split(' ');
+              
+              if (parts.length !== 3) {
+                return ctx.reply('Please provide your wallet address and transaction signature:\n/verify [wallet_address] [transaction_signature]');
               }
               
-              const userId = ctx.from.id;
-              const paymentState = paymentStates.get(userId);
+              const [_, walletAddress, txSignature] = parts;
+              const chatId = ctx.chat.id;
               
-              if (!paymentState || !paymentState.waitingForTransaction) {
-                return await ctx.reply(
-                  'Please start the subscription process first with /subscribe command.'
+              // First check if this chat already has an active subscription
+              const existingSubscription = await Payment.findOne({ 
+                chatId, 
+                expiresAt: { $gt: new Date() } 
+              });
+              
+              if (existingSubscription) {
+                const expiryDate = existingSubscription.expiresAt.toLocaleDateString();
+                return ctx.reply(`This group already has an active subscription until ${expiryDate}.`);
+              }
+              
+              // Check if transaction was already used
+              const existingPayment = await Payment.findOne({ transactionId: txSignature });
+              if (existingPayment) {
+                return ctx.reply(
+                  '❌ This transaction has already been used for a subscription.\n\n' +
+                  'Each transaction can only be used once for verification. ' +
+                  'Please make a new payment or contact support if you believe this is an error.'
                 );
               }
               
-              // Extract transaction signature
-              const args = ctx.message.text.split(' ');
-              if (args.length < 2) {
-                return await ctx.reply(
-                  'Please provide a transaction signature. Usage: /verify <transaction_signature>'
+              // Pending verification message
+              const pendingMsg = await ctx.reply('⏳ Verifying your payment on the Solana blockchain...');
+              
+              // Find pending subscription
+              const pendingSubscription = await Payment.findOne({ 
+                chatId, 
+                status: 'pending' 
+              });
+              
+              if (!pendingSubscription) {
+                await ctx.telegram.editMessageText(
+                  chatId, 
+                  pendingMsg.message_id, 
+                  null, 
+                  '❌ No pending subscription found for this group. Please use /subscribe to start the process.'
                 );
+                return;
               }
               
-              const transactionSignature = args[1].trim();
-              
-              // Check for existing transaction
-              const transactionUsed = await Payment.isTransactionUsed(transactionSignature);
-              if (transactionUsed) {
-                return await ctx.reply('This transaction has already been used for another subscription.');
-              }
-              
-              // Check transaction validity
-              await ctx.reply('⏳ Verifying your transaction. This may take a moment...');
-              
+              // Verify transaction
               const verification = await verifyPaymentTransaction(
-                transactionSignature, 
-                paymentState.solanaWallet,
-                paymentState.paymentType
+                txSignature, 
+                walletAddress, 
+                pendingSubscription.type
               );
               
-              if (!verification.isValid) {
-                return await ctx.reply(`❌ Transaction verification failed: ${verification.message}`);
-              }
-              
-              // Calculate expiration date
-              const expirationDate = calculateExpirationDate(paymentState.paymentType);
-              
-              // Update payment record
-              await Payment.findByIdAndUpdate(
-                paymentState.paymentId,
-                {
-                  paymentStatus: 'verified',
-                  transactionId: transactionSignature,
-                  transactionSignature: transactionSignature,
-                  verificationDate: new Date(),
-                  expirationDate: expirationDate,
-                  verificationNotes: `Verified manually by user. Amount: ${verification.details.amount} SOL`
+              if (verification.isValid) {
+                // Update subscription to active
+                const duration = pendingSubscription.type === 'annual' ? 12 : 3; // months
+                const expiresAt = new Date();
+                expiresAt.setMonth(expiresAt.getMonth() + duration);
+                
+                await Payment.findByIdAndUpdate(pendingSubscription._id, {
+                  status: 'active',
+                  transactionId: txSignature,
+                  walletAddress,
+                  amount: verification.details.amount,
+                  confirmedAt: new Date(),
+                  expiresAt
+                });
+                
+                // Confirmation message
+                await ctx.telegram.editMessageText(
+                  chatId, 
+                  pendingMsg.message_id, 
+                  null, 
+                  `✅ Payment verified successfully!\n\n` +
+                  `Your subscription is now active until ${expiresAt.toLocaleDateString()}.\n\n` +
+                  `Transaction details:\n` +
+                  `- Amount: ${verification.details.amount} SOL\n` +
+                  `- Date: ${verification.details.timestamp.toLocaleString()}\n\n` +
+                  `Thank you for subscribing!`
+                );
+                
+                // Remove any pending subscription reminders
+                const chatData = Object.assign({}, ctx.chat);
+                await clearSubscriptionReminders(chatData);
+                
+              } else {
+                // Failed verification
+                let errorMessage = `❌ Payment verification failed: ${verification.message}`;
+                
+                // Add troubleshooting help if available
+                if (verification.troubleshooting) {
+                  errorMessage += `\n\n🔍 Troubleshooting:\n${verification.troubleshooting}`;
                 }
-              );
-              
-              // Add group to allowed list
-              if (!ALLOWED_GROUP_IDS.includes(paymentState.groupId)) {
-                ALLOWED_GROUP_IDS.push(paymentState.groupId);
+                
+                await ctx.telegram.editMessageText(
+                  chatId, 
+                  pendingMsg.message_id, 
+                  null, 
+                  errorMessage
+                );
               }
-              
-              // Clear payment state
-              paymentStates.delete(userId);
-              
-              // Send success message
-              const subscriptionEndDate = expirationDate.toLocaleDateString();
-              await ctx.reply(
-                `✅ Payment verified successfully!\n\n` +
-                `Your subscription for "${paymentState.groupTitle}" is now active until ${subscriptionEndDate}.\n\n` +
-                `You can now add the bot to your group or keep using it if it's already added.`
-              );
-              
             } catch (error) {
-              console.error(`Error handling verify command: ${error.message}`);
-              await ctx.reply('Sorry, there was an error verifying your payment. Please try again later or contact support.');
+              console.error('Error in verify command:', error);
+              ctx.reply('An error occurred while verifying your payment. Please try again later or contact support.');
             }
             break;
             
