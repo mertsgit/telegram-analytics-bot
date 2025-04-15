@@ -713,9 +713,15 @@ _You can use commands like /stats, /topics and /leaderboard in private chat with
           .filter(t => /bitcoin|btc|eth|ethereum|crypto|token|blockchain|solana|sol|nft|defi|trading|coin/i.test(t._id))
           .slice(0, 5);
         
+        // Helper function to escape markdown
+        const escapeTopicMarkdown = (text) => {
+          if (!text) return '';
+          return text.toString().replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
+        };
+        
         // Build the stats message with focus on sentiment
         const statsMessage = `
-📊 *Sentiment Analysis for "${ctx.chat.title}"*
+📊 *Sentiment Analysis for "${escapeTopicMarkdown(ctx.chat.title)}"*
 
 *Sentiment Breakdown:*
 ${sentiments.map(s => `- ${s.charAt(0).toUpperCase() + s.slice(1)}: ${sentimentPercentages[s]}% (${sentimentData[s] || 0} messages)`).join('\n')}
@@ -729,7 +735,7 @@ ${sentiments.map(s => `- ${s.charAt(0).toUpperCase() + s.slice(1)}: ${sentimentP
 - Analysis period: Last ${Math.min(stats.totalMessages, 1000)} messages
 
 ${cryptoTopics.length > 0 ? `*Crypto Topics:*
-${cryptoTopics.map((t, i) => `${i+1}. ${t._id}: ${t.count} mentions (${Math.round(t.count/stats.totalMessages*100)}% of messages)`).join('\n')}` : ''}
+${cryptoTopics.map((t, i) => `${i+1}. ${escapeTopicMarkdown(t._id)}: ${t.count} mentions (${Math.round(t.count/stats.totalMessages*100)}% of messages)`).join('\n')}` : ''}
 
 _Use /topics for detailed topic analysis_`;
         
@@ -1863,6 +1869,12 @@ ${leaderboardEntries}
               // Format sentiment numbers
               const sentiments = ['positive', 'negative', 'neutral'];
               
+              // Helper function to escape markdown
+              const escapeTopicMarkdown = (text) => {
+                if (!text) return '';
+                return text.toString().replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
+              };
+              
               // Check for crypto-related topics
               const cryptoTopics = stats.topics
                 .filter(t => /bitcoin|btc|eth|ethereum|crypto|token|blockchain|solana|sol|nft|defi|trading|coin/i.test(t._id))
@@ -1870,7 +1882,7 @@ ${leaderboardEntries}
               
               // Build the stats message with focus on sentiment
               const statsMessage = `
-📊 *Sentiment Analysis for "${chatTitle}"*
+📊 *Sentiment Analysis for "${escapeTopicMarkdown(chatTitle)}"*
 
 *Sentiment Breakdown:*
 ${sentiments.map(s => `- ${s.charAt(0).toUpperCase() + s.slice(1)}: ${sentimentPercentages[s]}% (${sentimentData[s] || 0} messages)`).join('\n')}
@@ -1884,7 +1896,7 @@ ${sentiments.map(s => `- ${s.charAt(0).toUpperCase() + s.slice(1)}: ${sentimentP
 - Analysis period: Last ${Math.min(stats.totalMessages, 1000)} messages
 
 ${cryptoTopics.length > 0 ? `*Crypto Topics:*
-${cryptoTopics.map((t, i) => `${i+1}. ${t._id}: ${t.count} mentions (${Math.round(t.count/stats.totalMessages*100)}% of messages)`).join('\n')}` : ''}
+${cryptoTopics.map((t, i) => `${i+1}. ${escapeTopicMarkdown(t._id)}: ${t.count} mentions (${Math.round(t.count/stats.totalMessages*100)}% of messages)`).join('\n')}` : ''}
 
 _Use /topics for detailed topic analysis_`;
               
