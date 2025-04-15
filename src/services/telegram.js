@@ -1229,6 +1229,160 @@ _Data from CoinGecko_
       }
     });
 
+    // Add subscribe command handler
+    bot.command('subscribe', async (ctx) => {
+      try {
+        console.log(`Subscribe command received in chat ${ctx.chat.id} by user ${ctx.from.id}`);
+        
+        // Only allow in private chat
+        if (ctx.chat.type !== 'private') {
+          return await ctx.reply('Please use this command in a private chat with the bot.');
+        }
+        
+        // Start payment wizard
+        await startPaymentWizard(ctx);
+      } catch (error) {
+        console.error(`Error handling subscribe command: ${error.message}`);
+        await ctx.reply('Sorry, there was an error processing your subscription request. Please try again later.');
+      }
+    });
+    
+    // Add verify command handler
+    bot.command('verify', async (ctx) => {
+      try {
+        console.log(`Verify command received in chat ${ctx.chat.id} by user ${ctx.from.id}`);
+        
+        // Only allow in private chat
+        if (ctx.chat.type !== 'private') {
+          return await ctx.reply('Please use this command in a private chat with the bot.');
+        }
+        
+        const userId = ctx.from.id;
+        const paymentState = paymentStates.get(userId);
+        
+        if (!paymentState || !paymentState.waitingForTransaction) {
+          return await ctx.reply(
+            'Please start the subscription process first with /subscribe command.'
+          );
+        }
+        
+        // Extract transaction signature
+        const args = ctx.message.text.split(' ');
+        if (args.length < 2) {
+          return await ctx.reply(
+            'Please provide a transaction signature. Usage: /verify <transaction_signature>'
+          );
+        }
+        
+        const transactionSignature = args[1].trim();
+        
+        // Check for existing transaction
+        const transactionUsed = await Payment.isTransactionUsed(transactionSignature);
+        if (transactionUsed) {
+          return await ctx.reply('This transaction has already been used for another subscription.');
+        }
+        
+        // Check transaction validity
+        await ctx.reply('⏳ Verifying your transaction. This may take a moment...');
+        
+        const verification = await verifyPaymentTransaction(
+          transactionSignature, 
+          paymentState.solanaWallet,
+          paymentState.paymentType
+        );
+        
+        if (!verification.isValid) {
+          return await ctx.reply(`❌ Transaction verification failed: ${verification.message}`);
+        }
+        
+        // Calculate expiration date
+        const expirationDate = calculateExpirationDate(paymentState.paymentType);
+        
+        // Update payment record
+        await Payment.findByIdAndUpdate(
+          paymentState.paymentId,
+          {
+            paymentStatus: 'verified',
+            transactionId: transactionSignature,
+            transactionSignature: transactionSignature,
+            verificationDate: new Date(),
+            expirationDate: expirationDate,
+            verificationNotes: `Verified manually by user. Amount: ${verification.details.amount} SOL`
+          }
+        );
+        
+        // Add group to allowed list
+        if (!ALLOWED_GROUP_IDS.includes(paymentState.groupId)) {
+          ALLOWED_GROUP_IDS.push(paymentState.groupId);
+        }
+        
+        // Clear payment state
+        paymentStates.delete(userId);
+        
+        // Send success message
+        const subscriptionEndDate = expirationDate.toLocaleDateString();
+        await ctx.reply(
+          `✅ Payment verified successfully!\n\n` +
+          `Your subscription for "${paymentState.groupTitle}" is now active until ${subscriptionEndDate}.\n\n` +
+          `You can now add the bot to your group or keep using it if it's already added.`
+        );
+      } catch (error) {
+        console.error(`Error handling verify command: ${error.message}`);
+        await ctx.reply('Sorry, there was an error verifying your payment. Please try again later or contact support.');
+      }
+    });
+
+    // Add subscription command handler
+    bot.command('subscription', async (ctx) => {
+      try {
+        console.log(`Subscription command received in chat ${ctx.chat.id} by user ${ctx.from.id}`);
+        
+        const isPrivateChat = ctx.chat.type === 'private';
+        const isOwner = ctx.from.id === OWNER_ID;
+        
+        // In private chat, admin must select a group
+        if (isPrivateChat) {
+          if (isOwner) {
+            // For owner, show all subscriptions
+            await showAllSubscriptions(ctx);
+            return;
+          }
+          
+          // For regular users, check if they're admin in any groups
+          const adminGroups = await isGroupAdmin(ctx.from.id);
+          
+          if (!adminGroups) {
+            return await ctx.reply('You are not an admin of any group with an active subscription.');
+          }
+          
+          // If only one group, show subscription for that
+          if (adminGroups.length === 1) {
+            const groupId = adminGroups[0].id;
+            await showSubscriptionForGroup(ctx, groupId);
+            return;
+          }
+          
+          // If multiple groups, prompt selection
+          const selectedGroupId = await promptGroupSelection(ctx, ctx.from.id, 'subscription');
+          
+          if (!selectedGroupId) {
+            // Selection is pending
+            return;
+          }
+          
+          await showSubscriptionForGroup(ctx, selectedGroupId);
+          return;
+        }
+        
+        // In group chat, show subscription for current group
+        const groupId = ctx.chat.id;
+        await showSubscriptionForGroup(ctx, groupId);
+      } catch (error) {
+        console.error(`Error handling subscription command: ${error.message}`);
+        await ctx.reply('Sorry, there was an error retrieving subscription information. Please try again later.');
+      }
+    });
+
     // Add leaderboard command (Allowed groups only)
     bot.command('leaderboard', async (ctx) => {
       try {
